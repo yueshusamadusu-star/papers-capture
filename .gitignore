@@ -1,0 +1,18 @@
+.venv/
+.test-tmp/
+__pycache__/
+*.egg-info/
+build/
+dist/
+downloads/
+inbox/
+config.local.json
+*.pdf
+.env*
+
+# 本地验证与认证记录
+verification-local/
+*.log
+*.key
+*.pem
+*.p12

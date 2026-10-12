@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "papers-capture"
+version = "0.1.0"
+description = "公开文献检索、开放全文下载与浙大人工访问指引"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.28,<2"]
+
+[project.urls]
+Homepage = "https://github.com/yueshusamadusu-star/papers-capture"
+Repository = "https://github.com/yueshusamadusu-star/papers-capture"
+
+[project.scripts]
+papers-capture = "literature_helper:main"
+papers-capture-mcp = "mcp_server:main"
+zju-literature = "literature_helper:main"
+zju-literature-mcp = "mcp_server:main"
+
+[tool.setuptools]
+py-modules = ["literature_helper", "mcp_server"]
