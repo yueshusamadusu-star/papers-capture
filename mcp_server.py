@@ -2,7 +2,7 @@
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from typing import Any
-from literature_helper import LiteratureHelper, institutional_guide
+from literature_helper import LiteratureHelper, institutional_guide, open_access_page
 
 server = FastMCP("ZJU Literature Helper (unofficial)")
 helper = LiteratureHelper()
@@ -44,6 +44,24 @@ def zju_access_guide(doi: str = "") -> dict[str, Any]:
 def import_local_pdf(filename: str, identifier: str = "manual") -> dict[str, Any]:
     """将用户放入收件箱的一个 PDF 复制整理到保存目录，保留原文件；只接受文件名。"""
     return helper.import_pdf(filename, identifier)
+
+
+@server.tool(annotations=WRITE)
+def prepare_reading_list(query: str, limit: int = 5, open_browser: bool = False) -> dict[str, Any]:
+    """检索并保存本地HTML文献清单；open_browser=true时请求默认浏览器打开，不读取登录状态。"""
+    return helper.reading_list(query, limit, open_browser)
+
+
+@server.tool(annotations=WRITE)
+def open_paper_access(doi: str, route: str = "article", open_browser: bool = False) -> dict[str, Any]:
+    """给出论文/CARSI/WebVPN入口；open_browser=true才打开浏览器，由用户本人认证。"""
+    return open_access_page(doi, route, open_browser)
+
+
+@server.tool(annotations=WRITE)
+def collect_paper(identifier: str, open_browser: bool = False, route: str = "article") -> dict[str, Any]:
+    """优先下载支持的开放全文；否则提供本人访问入口，可显式请求打开浏览器。不会在浏览器中执行认证。"""
+    return helper.collect(identifier, open_browser, route)
 
 
 def main():

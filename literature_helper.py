@@ -5,6 +5,7 @@ import argparse
 from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,13 @@ import re
 import sys
 import threading
 import time
+import uuid
+import webbrowser
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_PDF = 25 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
 # 首版仅自动下载这些公共来源；其余 OA 链接返回人工处理。
@@ -27,6 +30,10 @@ API_HOSTS = frozenset({"api.crossref.org", "api.unpaywall.org"})
 
 class HelperError(ValueError):
     """可向用户展示的错误；不回显带邮箱等参数的请求地址。"""
+
+
+class AccessPageRequired(HelperError):
+    """HTTP 401/403：需要本人核对，不断言一定是未登录。"""
 
 
 def checked_url(url: str, hosts: frozenset[str]) -> str:
@@ -78,6 +85,8 @@ class PublicClient:
                                 raise HelperError("重定向缺少地址") from None
                             url = urljoin(url, location)
                             continue
+                        if exc.code in (401, 403):
+                            raise AccessPageRequired(f"来源返回 HTTP {exc.code}，请在官方页面核对权限或网站限制") from None
                         if exc.code == 429:
                             raise HelperError("来源限流：请稍后重试，并遵守服务方 Retry-After 提示") from None
                         raise HelperError(f"来源返回 HTTP {exc.code}；请人工检查访问权限或链接") from None
@@ -149,6 +158,45 @@ class LiteratureHelper:
         return {"status": "METADATA_ONLY", "query": query,
                 "papers": [summarize(w) for w in message.get("items", [])],
                 "note": "检索结果须核对相关性；元数据不等于全文或创新排重完成"}
+
+    def reading_list(self, query: str, limit: int = 5, open_browser: bool = False) -> dict:
+        """生成本地文献清单，可打开浏览器；机构认证始终交给官网。"""
+        metadata = self.search(query, limit)
+        report_dir = self.output / "reading-lists" / uuid.uuid4().hex
+        report_dir.mkdir(parents=True, exist_ok=False)
+        page = report_dir / "index.html"
+        manifest = report_dir / "results.json"
+        with manifest.open("x", encoding="utf-8") as f:
+            json.dump({"tool_version": VERSION, "saved_at": datetime.now(timezone.utc).isoformat(),
+                       "authentication": "UNKNOWN", **metadata}, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        with page.open("x", encoding="utf-8") as f:
+            f.write(render_reading_list(metadata))
+        result = {"status": "READING_LIST_READY", "path": str(page), "manifest": str(manifest),
+                  "papers": len(metadata["papers"]), "query": query,
+                  "authentication": "UNKNOWN", "subscription_access": "UNKNOWN"}
+        if open_browser:
+            result["browser"] = request_browser(page.as_uri())
+        return result
+
+    def collect(self, identifier: str, open_browser: bool = True, route: str = "article") -> dict:
+        """优先保存支持的开放全文；否则给出/打开本人访问入口，不读取浏览器认证。"""
+        if route not in ("article", "carsi", "webvpn"):
+            raise HelperError("访问路线应为 article、carsi 或 webvpn")
+        if identifier.startswith("arxiv:"):
+            return self.download(identifier)
+        doi = normalize_doi(identifier)
+        try:
+            acquisition = self.download(doi)
+        except AccessPageRequired as exc:
+            acquisition = {"status": "ACCESS_CHECK_REQUIRED", "reason": str(exc)}
+        # 网络故障、429及损坏PDF等错误继续返回错误，不冒充登录要求。
+        if acquisition["status"] in ("SAVED", "ALREADY_EXISTS"):
+            return acquisition
+        return {"status": "USER_BROWSER_ACTION_REQUIRED", "doi": doi,
+                "open_access_result": acquisition,
+                "access": open_access_page(doi, route, open_browser),
+                "note": "尚未取得可自动保存的全文；不据此认定需要登录或未订阅。请在官网核对，必要时本人机构登录；下载后可用import整理"}
 
     def lookup(self, doi: str) -> dict:
         doi = normalize_doi(doi)
@@ -249,11 +297,80 @@ class LiteratureHelper:
                 "sha256": digest, "bytes": len(body)}
 
 
+def article_url(doi: str) -> str:
+    return "https://doi.org/" + quote(normalize_doi(doi), safe="/")
+
+
+def request_browser(url: str) -> dict:
+    """只请求系统默认浏览器打开页面，返回值不证明页面已加载或登录成功。"""
+    try:
+        accepted = bool(webbrowser.open(url, new=2))
+    except (webbrowser.Error, OSError):
+        accepted = False
+    return {"status": "BROWSER_OPEN_REQUESTED" if accepted else "BROWSER_OPEN_FAILED",
+            "url": url, "authentication": "UNKNOWN",
+            "note": "请在浏览器中查看实际页面；需要时本人登录。工具不读取密码、Cookie或页面"}
+
+
+def open_access_page(doi: str, route: str = "article", open_browser: bool = True) -> dict:
+    paper = article_url(doi)
+    routes = {"article": paper, "carsi": "https://ds.carsi.edu.cn/",
+              "webvpn": "https://webvpn.zju.edu.cn/"}
+    if route not in routes:
+        raise HelperError("访问路线应为 article、carsi 或 webvpn")
+    result = {"status": "USER_ACCESS_PAGE", "doi": normalize_doi(doi),
+              "article_url": paper, "url": routes[route], "route": route,
+              "authentication": "UNKNOWN", "subscription_access": "UNKNOWN",
+              "steps": ["打开论文官网；需要时使用Institutional sign in选择学校并由本人认证",
+                        "CARSI先选择浙江大学；WebVPN登录后从数据库导航进入，不拼接代理地址",
+                        "回到文献清单继续逐篇查看；保存到收件箱的PDF可用import整理"]}
+    if open_browser:
+        result["browser"] = request_browser(routes[route])
+    return result
+
+
+def render_reading_list(metadata: dict) -> str:
+    """静态本地页；API文本全部转义，链接只由校方入口和有效DOI生成。"""
+    esc = lambda value: html.escape(str(value), quote=True)
+    cards = []
+    for i, paper in enumerate(metadata["papers"], 1):
+        try:
+            link = '<a class="button" target="_blank" rel="noopener noreferrer" href="' + esc(article_url(paper.get("doi") or "")) + '">打开论文／需要时机构登录</a>'
+        except HelperError:
+            link = '<span>缺少有效DOI，请在数据库按标题查找</span>'
+        cards.append('<article><h2>' + str(i) + '. ' + esc(paper.get("title") or "未提供标题") + '</h2><p>' +
+                     esc(paper.get("year") or "年份未知") + ' · ' + esc(paper.get("venue") or "来源未知") +
+                     '</p><p>' + esc('、'.join(paper.get("authors") or [])) + '</p><p>DOI：' +
+                     esc(paper.get("doi") or "未知") + '</p>' + link + '</article>')
+    return (
+        """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>文献清单</title><style>
+body{font:16px/1.7 system-ui,sans-serif;background:#f4f6fa;color:#16233b;
+margin:auto;padding:32px;max-width:980px}h1{font-size:28px}h2{font-size:19px;margin:0}
+article,header{background:white;padding:24px;border-radius:12px;margin:18px 0}
+p{margin:8px 0;overflow-wrap:anywhere}a{color:#164dae}
+.button{display:inline-block;padding:8px 14px;border:1px solid #164dae;
+border-radius:6px;text-decoration:none}nav a{margin-right:18px}
+</style></head><body><header><h1>文献清单</h1><p>检索词："""
+        + esc(metadata['query']) + """</p>
+<p>1. 打开感兴趣的论文。2. 官网需要认证时，本人选择学校并登录。
+3. 回到本清单继续查看；浏览器按网站规则保留登录状态。</p><nav>
+<a target="_blank" rel="noopener noreferrer" href="https://ds.carsi.edu.cn/">CARSI机构认证入口</a>
+<a target="_blank" rel="noopener noreferrer" href="https://webvpn.zju.edu.cn/">浙大WebVPN入口</a>
+<a target="_blank" rel="noopener noreferrer" href="https://libweb.zju.edu.cn/2022/0408/c39479a2515130/page.htm">官方访问说明</a>
+</nav><p>文献元数据来自Crossref；相关性需要本人筛选。机构登录与单篇订阅权限由官网显示，
+工具尚未核验；本页不自动登录或下载订阅全文。</p></header><main>"""
+        + ''.join(cards) + '</main></body></html>')
+
+
+
 def institutional_guide(doi: str = "") -> dict:
     if doi:
         doi = normalize_doi(doi)
     return {"status": "MANUAL_INSTITUTIONAL_ACCESS", "school": "浙江大学",
-            "doi_url": "https://doi.org/" + doi if doi else None,
+            "doi_url": article_url(doi) if doi else None,
             "library": "https://libweb.zju.edu.cn/", "database_navigation": "https://libdb.zju.edu.cn/",
             "off_campus_guide": "https://libweb.zju.edu.cn/2022/0408/c39479a2515130/page.htm",
             "webvpn": "https://webvpn.zju.edu.cn/", "carsi": "https://ds.carsi.edu.cn/",
@@ -272,6 +389,14 @@ def main() -> int:
     parser.add_argument("--inbox", help="人工 PDF 收件箱目录")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("search"); p.add_argument("query"); p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--reading-list", action="store_true", help="保存本地HTML文献清单")
+    p.add_argument("--open", action="store_true", help="保存清单并在默认浏览器打开")
+    p = sub.add_parser("collect", help="开放全文优先，无法保存时打开本人访问入口")
+    p.add_argument("identifier"); p.add_argument("--no-open", action="store_true")
+    p.add_argument("--via", choices=("article", "carsi", "webvpn"), default="article")
+    p = sub.add_parser("access", help="用浏览器打开论文或官方机构访问入口")
+    p.add_argument("doi"); p.add_argument("--no-open", action="store_true")
+    p.add_argument("--via", choices=("article", "carsi", "webvpn"), default="article")
     for command in ("lookup", "oa", "guide"):
         p = sub.add_parser(command); p.add_argument("doi", nargs="?" if command == "guide" else None, default="")
     p = sub.add_parser("download"); p.add_argument("identifier")
@@ -280,7 +405,14 @@ def main() -> int:
     helper = LiteratureHelper(args.output, args.inbox)
     try:
         if args.command == "search":
-            result = helper.search(args.query, args.limit)
+            if args.reading_list or args.open:
+                result = helper.reading_list(args.query, args.limit, args.open)
+            else:
+                result = helper.search(args.query, args.limit)
+        elif args.command == "collect":
+            result = helper.collect(args.identifier, not args.no_open, args.via)
+        elif args.command == "access":
+            result = open_access_page(args.doi, args.via, not args.no_open)
         elif args.command == "lookup":
             result = helper.lookup(args.doi)
         elif args.command == "oa":
