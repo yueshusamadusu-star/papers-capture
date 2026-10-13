@@ -8,6 +8,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from literature_helper import (AccessPageRequired, HelperError, LiteratureHelper,
@@ -23,6 +24,8 @@ class FakeClient:
 
     def json(self, url):
         self.calls.append(url)
+        if url.startswith('https://api.crossref.org/works/'):
+            return {'message': {'DOI': unquote(url.split('/works/', 1)[1])}}
         return self.record
 
     def get(self, url, hosts, max_bytes):
@@ -93,9 +96,11 @@ class BrowserWorkflowTests(unittest.TestCase):
         with patch.dict('os.environ', {}, clear=True), patch('literature_helper.webbrowser.open', return_value=True) as browser:
             result = self.helper.collect('10.1000/test')
         browser.assert_called_once_with('https://doi.org/10.1000/test', new=2)
-        self.assertFalse(self.client.calls)
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertNotIn("email=", self.client.calls[0])
         self.assertEqual(result['status'], 'USER_BROWSER_ACTION_REQUIRED')
-        self.assertEqual(result['open_access_result']['status'], 'NEED_CONTACT_EMAIL')
+        self.assertEqual(result['open_access_result']['status'], 'FULLTEXT_NOT_SAVED')
+        self.assertEqual(result['open_access_result']['checks'][0]['status'], 'NEED_CONTACT_EMAIL')
         self.assertEqual(result['access']['authentication'], 'UNKNOWN')
 
     def test_collect_open_fulltext_does_not_open_browser(self):

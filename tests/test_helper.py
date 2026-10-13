@@ -8,6 +8,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from literature_helper import (API_HOSTS, PDF_HOSTS, HelperError, LiteratureHelper,
@@ -23,6 +24,8 @@ class FakeClient:
 
     def json(self, url):
         self.calls.append(url)
+        if url.startswith('https://api.crossref.org/works/'):
+            return {'message': {'DOI': unquote(url.split('/works/', 1)[1])}}
         return self.record
 
     def get(self, url, hosts, max_bytes):
@@ -85,7 +88,8 @@ class HelperTests(unittest.TestCase):
         with patch.dict("os.environ", {"UNPAYWALL_EMAIL": "contact@example.org"}):
             result = self.helper.download("10.1000/x")
         self.assertFalse(result["automatic_download_supported"])
-        self.assertEqual(len(self.client.calls), 1)
+        self.assertEqual(len(self.client.calls), 2)
+        self.assertTrue(all("api." in url for url in self.client.calls))
         self.assertNotIn("email", json.dumps(result))
 
     def test_oa_download_supported_source(self):

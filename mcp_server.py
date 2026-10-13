@@ -59,9 +59,15 @@ def open_paper_access(doi: str, route: str = "article", open_browser: bool = Fal
 
 
 @server.tool(annotations=WRITE)
-def collect_paper(identifier: str, open_browser: bool = False, route: str = "article") -> dict[str, Any]:
+def collect_paper(identifier: str, open_browser: bool = False, route: str = "article", access_state: str = "unknown") -> dict[str, Any]:
     """优先下载支持的开放全文；否则提供本人访问入口，可显式请求打开浏览器。不会在浏览器中执行认证。"""
-    return helper.collect(identifier, open_browser, route)
+    return helper.collect(identifier, open_browser, route, access_state)
+
+
+@server.tool(annotations=WRITE)
+def search_and_collect(query: str, limit: int = 3, open_browser: bool = False) -> dict[str, Any]:
+    """串行检索并尝试保存最多10篇公开全文，清单逐篇记录结果；限流停止，不弹逐篇认证页。"""
+    return helper.reading_list(query, limit, open_browser, collect_fulltext=True)
 
 
 def main():

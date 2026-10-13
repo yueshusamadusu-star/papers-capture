@@ -24,7 +24,7 @@ async def main():
     checks = {}
     for command in ('access', 'collect'):
         r = subprocess.run([sys.executable, str(project / 'literature_helper.py'), command,
-                            '10.3390/metrology5040071', '--no-open'], env=env,
+                            '10.1016/0041-624x(71)90200-9', '--no-open'], env=env,
                            capture_output=True, text=True, encoding='utf-8', timeout=20, check=True)
         data = json.loads(r.stdout)
         access = data if command == 'access' else data['access']
@@ -48,7 +48,7 @@ async def main():
                 'status': 'PASS', 'papers': data['papers'], 'path': str(page),
                 'manifest': str(manifest), 'html_sha256': hashlib.sha256(page.read_bytes()).hexdigest()}
     report = {'time_utc': datetime.now(timezone.utc).isoformat(), 'checks': checks,
-              'scope': 'CLI及真实MCP；仅一次Crossref公共查询；未启动实际浏览器或认证机构'}
+              'scope': 'CLI及真实MCP；一次主题查询及一次DOI公开核对；未启动实际浏览器或认证机构'}
     (root / 'verification.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(report, ensure_ascii=False))
 
