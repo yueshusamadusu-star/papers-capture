@@ -6,6 +6,8 @@ from literature_helper import LiteratureHelper, institutional_guide, open_access
 
 server = FastMCP("ZJU Literature Helper (unofficial)")
 helper = LiteratureHelper()
+from collection_workflow import CollectionManager
+collections = CollectionManager(helper)
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 
@@ -68,6 +70,49 @@ def collect_paper(identifier: str, open_browser: bool = False, route: str = "art
 def search_and_collect(query: str, limit: int = 3, open_browser: bool = False) -> dict[str, Any]:
     """串行检索并尝试保存最多10篇公开全文，清单逐篇记录结果；限流停止，不弹逐篇认证页。"""
     return helper.reading_list(query, limit, open_browser, collect_fulltext=True)
+
+
+@server.tool(annotations=WRITE)
+def begin_literature_collection(prompt: str, english_queries: list[str], per_query: int = 5, max_papers: int = 15, use_browser: bool = True) -> dict[str, Any]:
+    """先由调用agent把中文需求拆成1–4条专业英文检索式；本工具多式检索、按DOI去重并启动后台收集。优先公开PDF；需要认证时打开专用浏览器，由本人登录后自动核对本篇权限并保存/退避。返回session_id；后续调用collection_status，不能把启动当作下载完成。"""
+    return collections.create(prompt, english_queries, per_query, max_papers, use_browser)
+
+
+@server.tool(annotations=WRITE)
+def begin_paper_downloads(dois: list[str], use_browser: bool = True) -> dict[str, Any]:
+    """启动本人选定的1–30篇DOI的公开优先/本人认证收集任务；需要本人授权时暂停，不接收账号密码。"""
+    return collections.from_identifiers(dois, use_browser)
+
+
+@server.tool(annotations=READ)
+def collection_status(session_id: str) -> dict[str, Any]:
+    """读取收集任务的逐篇下载/权限/待本人认证状态与实际PDF数量；不读取浏览器密码、Cookie或其他标签内容。"""
+    return collections.status(session_id)
+
+
+@server.tool(annotations=WRITE)
+def resume_collection(session_id: str) -> dict[str, Any]:
+    """本人表示已完成授权并返回论文页后，继续核对和保存；网页仍不确定时保留未知，不假称授权成功。"""
+    return collections.action(session_id, "resume")
+
+
+@server.tool(annotations=WRITE)
+def skip_collection_paper(session_id: str) -> dict[str, Any]:
+    """按本人要求跳过当前待处理论文，保留元数据并继续下一篇；不把本人跳过写成无订阅。"""
+    return collections.action(session_id, "skip")
+
+
+@server.tool(annotations=WRITE)
+def close_collection(session_id: str) -> dict[str, Any]:
+    """关闭该文献任务的专用浏览器，保留已保存PDF与进度，不关闭用户既有浏览器。"""
+    return collections.action(session_id, "close")
+
+
+@server.tool(annotations=WRITE)
+def use_regular_browser(session_id: str, open_browser: bool = True) -> dict[str, Any]:
+    """专用自动化浏览器反复验证时，改用本人正常Chrome/Edge中的本地扩展接续。停止原专用后端，给出一次性安装目录并打开本机配对页；不绕过验证码。扩展使用浏览器自己的下载权限，不导出Cookie或密码。需本人加载扩展，实际下载结果由collection_status核对。"""
+    from normal_browser import use_regular_browser as connect
+    return connect(collections, session_id, open_browser)
 
 
 def main():

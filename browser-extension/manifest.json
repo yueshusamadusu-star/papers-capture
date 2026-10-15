@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "papers-capture 文献接续",
+  "version": "0.4.0",
+  "description": "本人认证后核对选定论文并保存PDF，只连接本机文献工具",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://*.acm.org/*",
+    "https://*.aip.org/*",
+    "https://*.aps.org/*",
+    "https://*.arxiv.org/*",
+    "https://*.cambridge.org/*",
+    "https://*.elsevier.com/*",
+    "https://*.ieee.org/*",
+    "https://*.iop.org/*",
+    "https://*.mdpi-res.com/*",
+    "https://*.mdpi.com/*",
+    "https://*.nature.com/*",
+    "https://*.ncbi.nlm.nih.gov/*",
+    "https://*.oup.com/*",
+    "https://*.sagepub.com/*",
+    "https://*.sciencedirect.com/*",
+    "https://*.scitepress.org/*",
+    "https://*.springer.com/*",
+    "https://*.springerlink.com/*",
+    "https://*.tandfonline.com/*",
+    "https://*.wiley.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "papers-capture"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/pair*"
+      ],
+      "js": [
+        "pair.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

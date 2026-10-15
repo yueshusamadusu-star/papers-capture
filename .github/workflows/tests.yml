@@ -24,3 +24,7 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install ".[mcp]"
       - run: python tests/smoke_mcp.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node tests/test_extension.cjs

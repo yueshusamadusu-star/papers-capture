@@ -20,8 +20,12 @@ async def main():
             names = sorted(tool.name for tool in tools.tools)
             expected = sorted(["search_papers", "lookup_paper", "locate_open_access",
                                "download_open_access", "zju_access_guide", "import_local_pdf",
-                               "prepare_reading_list", "open_paper_access", "collect_paper", "search_and_collect"])
+                               "prepare_reading_list", "open_paper_access", "collect_paper", "search_and_collect", "begin_literature_collection", "begin_paper_downloads", "collection_status", "resume_collection", "skip_collection_paper", "close_collection", "use_regular_browser"])
             assert names == expected, names
+            invalid_plan = await session.call_tool("begin_literature_collection", {"prompt":"中文需求", "english_queries":[]})
+            assert invalid_plan.isError
+            bad_session = await session.call_tool("collection_status", {"session_id":"../secret"})
+            assert bad_session.isError
             guide = await session.call_tool("zju_access_guide", {"doi": "10.3390/metrology5040071"})
             assert not guide.isError
             data = guide.structuredContent

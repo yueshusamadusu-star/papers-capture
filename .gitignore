@@ -16,3 +16,6 @@ verification-local/
 *.key
 *.pem
 *.p12
+
+# 专用浏览器认证状态，仅在本机保留
+.local-browser/

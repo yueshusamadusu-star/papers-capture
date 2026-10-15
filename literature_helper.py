@@ -1,4 +1,4 @@
-"""公开 API 文献助手：不接收校园密码，不自动访问机构授权全文。"""
+"""公开 API 文献助手：不接收校园密码；认证收集流程见collection_workflow。"""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 MAX_PDF = 25 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
 # 首版仅自动下载这些公共来源；其余 OA 链接返回人工处理。

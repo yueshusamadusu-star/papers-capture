@@ -1,125 +1,98 @@
-# papers-capture：文献检索与本地收集工具
+# papers-capture：提示词到文献全文
 
-0.3.0，2026-10-13。非浙大官方项目。支持公共检索、部分来源全文自动保存、本人官网访问与本地PDF整理。代码MIT，文献内容按各自许可使用。
+0.4.0，2026-10-16。非浙大官方项目。代码MIT；文献按各自许可使用。
 
-仓库：https://github.com/yueshusamadusu-star/papers-capture
+## 在agent中使用
 
-## 推荐：检索并实际尝试保存全文
+直接用中文说明研究需求，例如“查找超声气体流量计的周跳、时差估计和置信度补偿方法”。调用agent先拆成1–4条专业英文检索式，再调用 `begin_literature_collection`；不需要另买翻译模型API或向工具提交学校密码。
 
-需要Python3.10+。首次使用可clone本仓库；脚本基础功能只使用标准库。
+任务流程：多检索式 → Crossref检索 → DOI去重与题名相关性初筛 → 公开PDF优先 → 必要时本人认证 → 核对本篇身份与访问结果 → 保存或退避。最多每式10篇、每任务30篇。检索覆盖不等于综述完整性，题名词匹配也不能代替学术筛选。
+
+工具返回session_id、清单及逐篇状态。**启动成功、元数据和摘要都不计作全文；只有实际校验并保存的PDF计数。** 文件与来源清单只写配置目录，SHA256去重，不覆盖用户文件。
+
+## 两种浏览器接续
+
+### 专用浏览器
+
+安装可选依赖：
 
 ```powershell
-python literature_helper.py search "ultrasonic flowmeter cycle skipping" --limit 3 --collect --open
+python -m pip install -e ".[mcp,browser]"
 ```
 
-这条命令会串行检索并尝试保存最多3篇的公开PDF，再打开结果清单。每篇分别显示“已保存PDF”“全文未保存”“获取出错”或“尚未尝试”；已保存的条目能直接打开本地PDF。PDF、HTML与JSON默认在项目 `downloads`，可用顶层 `--output` 指定目录。
+Windows默认使用已安装Edge；其他环境可安装Playwright Chromium，并设置 `LIT_BROWSER_CHANNEL=chromium`。工具使用独立浏览器目录；本人在网站选择机构、登录后返回论文页。工具只读取论文身份与权限指标，不读取登录输入框值、不导出Cookie。
 
-**`search --open` 没有 `--collect` 时仍是纯检索。** 清单会明确写“仅检索，未执行全文收集”。元数据条数不等于已下载篇数，关键词检索也不自动保证相关性、年份或文献质量。返回数量1–10，建议先3篇筛选。
+学校名称不能证明单篇权限。已匹配DOI的论文页提供候选PDF后，实际取得完整PDF才记成功；只有机构识别加明确购买/无权限提示才退避。模糊页面、网络错误和401/403保留待本人核对。网站验证码由本人处理，来源429停止整批。
 
-已有DOI时直接收集：
+一篇卡验证或请求超时，不阻挡其他候选检查；可恢复、跳过、关闭。空闲15分钟保存进度后退出；resume可继续，已保存论文不重下。
+
+### 普通Chrome/Edge扩展
+
+本次实测：AIP在专用自动化浏览器反复真人验证，而作者的正常浏览器能进入。Cloudflare[明确说明生产验证不支持Playwright等自动化浏览器](https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/)。因此新增普通浏览器接续，不将验证循环解释成学校无订阅。
+
+1. 调用 `use_regular_browser(session_id)`，停止原专用后端，打开本机配对页。
+2. 在能正常访问论文的Chrome/Edge扩展管理页，开启开发者模式，加载本仓库 `browser-extension` 目录（一次）。
+3. 刷新工具打开的本机配对页，出现“已连接”。
+4. 点扩展图标，选择任务并开始。需要机构认证时本人点击网站入口并登录；返回本篇论文后自动继续。新标签页登录返回或需要重新检查时，点“我已登录，检查当前论文”。
+5. 浙大用户也可点扩展的“打开浙大机构认证（CARSI）”，本人选择浙江大学和IEEE或Elsevier SD。[浙大图书馆官方指引](https://libweb.zju.edu.cn/2022/0408/c39479a2515130/page.htm)列出这些访问路线；机构认证仍不保证具体论文已订阅。
+
+ScienceDirect下载准备页和IEEE预览页先在浏览器中打开，只有随后取得并校验的PDF计入全文；htm/html不算成功。扩展只处理所选任务的论文标签；不申请Cookie读取、密码、调试器或学校认证网站读取权限。[浏览器下载API](https://developer.chrome.com/docs/extensions/reference/api/downloads#method-download)在浏览器内部使用当前会话，不将Cookie交给Python或agent。服务仅监听127.0.0.1:8766；配对能力凭据只在本机私有目录与扩展存储，不入Git。
+
+原下载先保存在浏览器下载目录下 `papers-capture/<任务号>/`，Python核对专用目录和完整PDF后复制到文献库，保留原文件。浏览器使用自定义下载目录时，须设置 `LIT_BROWSER_DOWNLOAD_DIR` 为真实下载根目录；无法核验时拒绝导入，不冒称成功。
+
+本机作者已在Chrome完成扩展加载和配对；真实学校订阅样例仍在验收。其他使用者的扩展安装和学校认证需要本人参与。普通浏览器可打开页面不等于学校有全文权限，也不保证下载链接必然可用；其他来源仍可受网络、机构许可和平台规则限制。工具不授予订阅或批量使用许可。
+
+## MCP接入与调用
 
 ```powershell
-python literature_helper.py collect 10.5220/0007535905680572
+codex mcp add papers-capture --env "LIT_OUTPUT_DIR=D:\文献库" --env "LIT_BROWSER_DIR=D:\本机浏览器状态" -- "D:\工具\.venv\Scripts\python.exe" "D:\工具\mcp_server.py"
 ```
 
-当前公开获取路线：有普通联系邮箱时用Unpaywall查询同一DOI的多个开放位置；支持位置失败可尝试下一个。随后核对Crossref公开元数据，支持SciTePress指定DOI格式的公开PDF，以及匹配当前CC许可的已声明PDF链接。自动下载仍限支持域名，每篇最多检查3个PDF候选，来源限流即停止整个检索收集队列。没有邮箱也可执行Crossref与SciTePress路线，不直接结束于登录页。
+这是当前本机Codex客户端的MCP配置，不绑定某个模型。也可以使用可信项目的 `.codex/config.toml` 限定项目。按[官方说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)核对配置及刷新；配置完成不能代替实际工具发现和调用验收。
 
-## 对两种登录/权限情况的处理
+新流程的七个工具：
 
-### SciTePress：可能是免费个人账号
+| 工具 | 用途 |
+| --- | --- |
+| begin_literature_collection | 中文需求+agent提供的专业英文检索式，启动收集 |
+| begin_paper_downloads | 处理本人选定的DOI列表 |
+| collection_status | 实际PDF数量、逐篇状态、当前需本人操作项 |
+| resume_collection | 专用浏览器重试；普通扩展提示本人点检查按钮 |
+| skip_collection_paper | 明确放弃当前论文，保留元数据 |
+| close_collection | 停止任务，保留文件和进度 |
+| use_regular_browser | 改用正常浏览器扩展，给出一次性安装与配对入口 |
 
-SciTePress是会议论文出版社的数字图书馆，非跨出版社通用检索入口。其[官方说明](https://www.scitepress.org/Aboutus.aspx)与[登录页](https://www.scitepress.org/Login.aspx)说明有免费个人账号和下载额度；不要把个人账号误认为学校机构账号。
+原十工具保留。`search_and_collect` / `search --collect`仍是公开来源流程；新的完整认证流程使用上述begin工具。MCP默认写配置目录，不接收任意输出路径或口令。
 
-本版对截图中的 `10.5220/0007535905680572` 已实际通过公开PDF保存。适配仅支持16位数字后缀、Crossref同一DOI/出版年/官方资源域；路径约定记录在来源JSON。不能据一篇公开可读承诺全部SciTePress文献无需账号。若某篇确实要求个人账号，返回免费账号入口，由本人操作，不用学校密码，也不绕过登录或下载限制。
-
-### ScienceDirect：机构已识别，但单篇未订阅
-
-[官方权限说明](https://www.elsevier.support/sciencedirect/answer/what-different-access-levels-are-there-for-journals-and-books)区分机构识别与具体卷期/单篇覆盖范围。显示学校名称不证明某篇PDF可取；未取得1971年的记录也不能据此断言整本期刊未购买。
-
-本人已确认该篇未订阅时：
+## CLI
 
 ```powershell
+python collection_workflow.py start "超声气体流量计周跳" --query "ultrasonic gas flowmeter cycle skipping" --query "ultrasonic time delay estimation envelope correlation" --per-query 5 --max-papers 10
+python collection_workflow.py status <任务号>
+python collection_workflow.py resume <任务号>
+python collection_workflow.py skip <任务号>
+python collection_workflow.py close <任务号>
+python collection_workflow.py papers 10.5220/0007535905680572
+```
+
+CLI的中文输入也须显式提供英文query；专业翻译由agent完成，脚本不把固定默认词冒充完整翻译。旧版独立公开检索/下载/手工导入入口保持：
+
+```powershell
+python literature_helper.py search "ultrasonic flowmeter" --limit 3 --collect --open
 python literature_helper.py collect "10.1016/0041-624x(71)90200-9" --access-state not_subscribed
 ```
 
-工具先继续查公开来源，若未取得则返回 `MANUAL_REQUIRED`、标明 `NOT_SUBSCRIBED_USER_REPORTED`，给出同一DOI的开放版本检索和[浙大文献传递](https://libweb.zju.edu.cn/55971/list.htm)入口，不再弹相同机构登录页。这个状态来自本人报告，工具没有独立验证学校采购范围，也不会自动提交付费/文献传递申请。其他论文可作替代阅读，不能冒充原篇全文。
+Unpaywall可选普通联系邮箱：`UNPAYWALL_EMAIL`，不是学校密码；未配置明确标记未查询。公开路线支持指定arXiv/MDPI/PMC/SciTePress入口及Crossref匹配当前CC许可的链接；TDM链接不当OA，尚在禁运的位置不自动获取。每来源串行并遵守限流。个人账号与学校认证分开判断；未订阅可查同一论文开放版本、文献传递或舍弃，其他论文不能冒充原篇全文。
 
-## 启用开放版本查询：只需普通联系邮箱
-
-[Unpaywall官方API](https://unpaywall.org/api)要求普通联系邮箱，不是学校通行证密码。可在本机PowerShell输入：
-
-```powershell
-$env:UNPAYWALL_EMAIL = Read-Host "输入普通联系邮箱（非学校密码）"
-python literature_helper.py collect "你的DOI"
-```
-
-邮箱仅在本次终端环境，按API要求发给Unpaywall；源码、公开报告和结果不记录邮箱。未配置时结果明确标记 `NEED_CONTACT_EMAIL`、查询未执行，不能把它写成“没有开放版本”。`best_oa_location`不能代表所有可选位置，本版也检查当前 `oa_locations`，不使用仍在禁运中的位置。
-
-## 本人官网访问与整理
-
-需要时由本人在官网注册/登录、查看权限和保存PDF。是否保持登录由网站和浏览器决定；脚本不读取浏览器Cookie，不会在本人登录后自动继承订阅下载权限。
-
-```powershell
-python literature_helper.py access 10.3390/metrology5040071 --via carsi
-# 或 --via webvpn；登录后按官方平台数据库导航进入
-python literature_helper.py --output "D:\文献" --inbox "D:\文献收件箱" import "自己下载的一篇.pdf" --identifier 10.3390/metrology5040071
-```
-
-本人下载后可用import复制整理、保留原文件。只有文件名可传给import，来源记录和文件使用SHA256去重，不覆盖不同内容。若只要链接：`collect/access --no-open`；`search --reading-list`仅生成清单；`search --collect`可收集后不启动浏览器。
-
-## 其他接口
-
-```powershell
-python literature_helper.py search "ultrasonic flowmeter" --limit 5
-python literature_helper.py lookup 10.3390/metrology5040071
-python literature_helper.py oa 10.3390/metrology5040071
-python literature_helper.py --output "D:\文献" download arxiv:1706.03762
-python literature_helper.py guide 10.3390/metrology5040071
-```
-
-arXiv例子仅供工具演示，不是超声研究依据。下载白名单当前为arXiv、MDPI指定域名、PMC、SciTePress，其他开放库位置仍可能需本人处理；没有实现全网通用下载器或付费出版商全文API。
-
-## MCP
-
-```powershell
-python -m pip install ".[mcp]"
-python mcp_server.py
-```
-
-使用官方Python SDK的stdio服务；本人客户端配置可参考：
-
-```json
-{
-  "mcpServers": {
-    "papers-capture": {
-      "command": "C:/你的Python/python.exe",
-      "args": ["D:/你的工具目录/mcp_server.py"],
-      "env": {"LIT_OUTPUT_DIR": "D:/文献", "LIT_INBOX_DIR": "D:/文献收件箱"}
-    }
-  }
-}
-```
-
-十个工具：`search_papers`、`lookup_paper`、`locate_open_access`、`download_open_access`、`zju_access_guide`、`import_local_pdf`、`prepare_reading_list`、`open_paper_access`、`collect_paper`、**`search_and_collect`**。
-
-- `prepare_reading_list`仅检索；`search_and_collect`实际尝试保存全文，默认最多3篇。
-- `collect_paper`可传 `access_state="not_subscribed"`，按本人报告停止重复登录引导。
-- `open_browser`默认false，明确true才请求打开结果页；批次不弹逐篇登录。
-- 工具不修改客户端配置。浏览器打开请求不证明登录成功，认证状态保留UNKNOWN。
-
-## 实际验证与边界
+## 验证
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 python tests/smoke_mcp.py
-# 以下会访问公开网络并保存一个样例PDF；output需使用未存在目录
-python tests/verify_acquisition_workflow.py --output verification-local/自己的验收目录
+node tests/test_extension.cjs
+python tests/verify_auth_browser.py
 ```
 
-42项离线测试与十工具MCP验收见[0.3.0验收记录](docs/验收记录_V0_3.md)。历史见[0.2.0](docs/验收记录_V0_2.md)及[0.1.0](docs/验收记录_V0_1.md)。
+72项离线、17工具真实stdio、普通扩展Chrome API模拟、真实浏览器本机授权夹具通过。真实联网公开PDF与实际MCP接入已核对；AIP真人验证循环如实记录。**本机授权夹具和扩展模拟不代表真实浙江大学订阅认证已经通过。** 具体进度见0.4验收记录。
 
-请求串行、间隔至少3.1秒；429停止。PDF限25MB并检查头尾，不能代替完整解析、恶意文件检查或论文身份认证。保留来源、候选尝试与文件哈希；个人文献/清单/环境不入Git。
-
-[浙大电子资源管理办法](https://libweb.zju.edu.cn/2016/1014/c39581a1666449/page.htm)限制自动工具下载授权资料与超量集中操作，不能据此说“自动填密码被明文禁止”。本工具的公开PDF获取与本人机构认证分别处理。校园认证、出版商接口授权和本文获取率不由离线测试证明。
-
-官方资料：[Crossref REST](https://www.crossref.org/documentation/retrieve-metadata/rest-api/)、[Unpaywall API](https://unpaywall.org/api)、[Unpaywall数据结构](https://unpaywall.org/data-format)、[MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)。
+只读参考了作者既有提示词工具，未改原项目。其摘要TXT与目标数量回报未作为本工具全文成功依据；硬编码密钥未复制。下载PDF、浏览器认证状态、能力凭据、环境与个人任务报告不进入公开Git。

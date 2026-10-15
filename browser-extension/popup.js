@@ -1,0 +1,4 @@
+const status=document.getElementById("status");
+async function send(message){const result=await chrome.runtime.sendMessage(message);if(result.error)throw Error(result.error);return result;}
+send({action:"tasks"}).then(({tasks})=>{const select=document.getElementById("task");for(const task of tasks){const option=document.createElement("option");option.value=task.session_id;option.textContent=task.original_prompt;select.append(option);}status.textContent=tasks.length?"选择任务后开始；机构登录请在网站里本人完成。":"尚无待接续任务，先请agent创建任务。";}).catch(e=>status.textContent=e.message);
+for(const action of ["start","auth","check","skip"]){document.getElementById(action).onclick=()=>send({action,session_id:document.getElementById("task").value}).then(result=>status.textContent=result.title||result.status).catch(e=>status.textContent=e.message);}
