@@ -1,6 +1,6 @@
 # papers-capture：提示词到文献全文
 
-0.4.0，2026-10-16。非浙大官方项目。代码MIT；文献按各自许可使用。
+0.4.1，2026-10-16。非浙大官方项目。代码MIT；文献按各自许可使用。
 
 ## 在agent中使用
 
@@ -36,7 +36,7 @@ Windows默认使用已安装Edge；其他环境可安装Playwright Chromium，�
 4. 点扩展图标，选择任务并开始。需要机构认证时本人点击网站入口并登录；返回本篇论文后自动继续。新标签页登录返回或需要重新检查时，点“我已登录，检查当前论文”。
 5. 浙大用户也可点扩展的“打开浙大机构认证（CARSI）”，本人选择浙江大学和IEEE或Elsevier SD。[浙大图书馆官方指引](https://libweb.zju.edu.cn/2022/0408/c39479a2515130/page.htm)列出这些访问路线；机构认证仍不保证具体论文已订阅。
 
-ScienceDirect下载准备页和IEEE预览页先在浏览器中打开，只有随后取得并校验的PDF计入全文；htm/html不算成功。扩展只处理所选任务的论文标签；不申请Cookie读取、密码、调试器或学校认证网站读取权限。[浏览器下载API](https://developer.chrome.com/docs/extensions/reference/api/downloads#method-download)在浏览器内部使用当前会话，不将Cookie交给Python或agent。服务仅监听127.0.0.1:8766；配对能力凭据只在本机私有目录与扩展存储，不入Git。
+ScienceDirect优先点击官网View PDF，跳转到精确的pdf.sciencedirectassets.com文件域后按原论文PII核对，再下载新生成的临时链接；不对Chrome内置PDF阅读器注入页面脚本。下载准备页和IEEE预览页先在浏览器中打开，只有随后取得并校验的PDF计入全文；htm/html不算成功。扩展感叹号表示最近有失败，打开弹窗可看具体原因；完整PDF成功归档后清除。扩展只处理所选任务的论文标签；不申请Cookie读取、密码、调试器或学校认证网站读取权限。[浏览器下载API](https://developer.chrome.com/docs/extensions/reference/api/downloads#method-download)在浏览器内部使用当前会话，不将Cookie交给Python或agent。服务仅监听127.0.0.1:8766；配对能力凭据只在本机私有目录与扩展存储，不入Git。
 
 原下载先保存在浏览器下载目录下 `papers-capture/<任务号>/`，Python核对专用目录和完整PDF后复制到文献库，保留原文件。浏览器使用自定义下载目录时，须设置 `LIT_BROWSER_DOWNLOAD_DIR` 为真实下载根目录；无法核验时拒绝导入，不冒称成功。
 
@@ -93,6 +93,6 @@ node tests/test_extension.cjs
 python tests/verify_auth_browser.py
 ```
 
-72项离线、17工具真实stdio、普通扩展Chrome API模拟、真实浏览器本机授权夹具通过。真实联网公开PDF与实际MCP接入已核对；AIP真人验证循环如实记录。**本机授权夹具和扩展模拟不代表真实浙江大学订阅认证已经通过。** 具体进度见0.4验收记录。
+73项离线、17工具真实stdio、普通扩展Chrome API模拟、真实浏览器本机授权夹具通过。真实联网公开PDF与实际MCP接入已核对；AIP真人验证循环如实记录。**本机授权夹具和扩展模拟不代表真实浙江大学订阅认证已经通过。** 具体进度见0.4与0.4.1验收记录；0.4.1针对作者实际仍得到htm及感叹号的失败修复，不把上版回归通过当成真实下载成功。
 
 只读参考了作者既有提示词工具，未改原项目。其摘要TXT与目标数量回报未作为本工具全文成功依据；硬编码密钥未复制。下载PDF、浏览器认证状态、能力凭据、环境与个人任务报告不进入公开Git。

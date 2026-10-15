@@ -31,9 +31,10 @@ class NormalBrowserTests(unittest.TestCase):
         self.state['backend']='other';self.manager.save(self.state)
         self.assertEqual(self.bridge.tasks(),[])
     def test_complete_imports_valid_pdf_and_keeps_original(self):
+        self.state['papers'][0]['reason']='旧下载失败';self.manager.save(self.state)
         p=self.file(b'%PDF-1.4\nfixture\n%%EOF')
         result=self.bridge.update({'session_id':self.sid,'index':0,'download_path':str(p)},True)
-        self.assertEqual(result['actual_pdf_count'],1);self.assertEqual(result['status'],'FINISHED');self.assertTrue(p.exists())
+        self.assertEqual(result['actual_pdf_count'],1);self.assertEqual(result['status'],'FINISHED');self.assertTrue(p.exists());self.assertNotIn('reason',result['papers'][0])
     def test_html_is_not_counted_as_fulltext(self):
         p=self.file(b'<html>login</html>')
         html=p.with_suffix('.htm');p.rename(html);p=html
@@ -53,6 +54,12 @@ class NormalBrowserTests(unittest.TestCase):
         installed.mkdir(parents=True);(installed/'manifest.json').write_text('{}')
         with patch('normal_browser.__file__',str(root/'site-packages'/'normal_browser.py')),patch('normal_browser.sys.prefix',str(root/'prefix')):
             self.assertEqual(extension_directory(),installed)
+    def test_failure_code_only_stores_safe_diagnostics(self):
+        result=self.bridge.update({'session_id':self.sid,'index':0,'status':'DOWNLOAD_ERROR','identity_matched':True,'extension_version':'0.4.1','failure_code':'NOT_PDF','signed_url':'https://example.invalid/?secret=fixture'})
+        paper=result['papers'][0]
+        self.assertEqual(paper['browser_evidence']['extension_version'],'0.4.1')
+        self.assertEqual(paper['browser_evidence']['failure_code'],'NOT_PDF')
+        self.assertNotIn('fixture',json.dumps(paper))
     def test_loopback_api_requires_capability(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler_for(self.bridge,'fixture-token'))
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

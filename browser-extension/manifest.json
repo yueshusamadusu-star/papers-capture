@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "papers-capture 文献接续",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "本人认证后核对选定论文并保存PDF，只连接本机文献工具",
   "permissions": [
     "activeTab",
@@ -30,7 +30,8 @@
     "https://*.springer.com/*",
     "https://*.springerlink.com/*",
     "https://*.tandfonline.com/*",
-    "https://*.wiley.com/*"
+    "https://*.wiley.com/*",
+    "https://pdf.sciencedirectassets.com/*"
   ],
   "background": {
     "service_worker": "background.js"

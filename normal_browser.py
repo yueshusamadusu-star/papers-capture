@@ -92,6 +92,8 @@ class RegularBridge:
                     paper['reason']='下载结果不是完整PDF，可能为预览/登录/验证页；未计入全文'
                 else:
                     paper['status'],paper['file']=result['status'],result
+                    paper.pop('reason',None)
+                    paper.get('browser_evidence',{}).pop('failure_code',None)
             else:
                 observed=data.get('status')
                 allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR'}
@@ -103,6 +105,12 @@ class RegularBridge:
                 paper['browser_evidence']={'identity_matched':bool(data.get('identity_matched')),'backend':'regular_extension','observed_state':observed,
                     'institution_recognized':data.get('institution_recognized') is True, 'visible_auth_form':data.get('visible_auth_form') is True,
                     'pdf_candidates':min(6,max(0,data.get('pdf_candidates',0))) if type(data.get('pdf_candidates',0)) is int else 0}
+                if re.fullmatch(r'\d+\.\d+\.\d+',str(data.get('extension_version',''))):
+                    paper['browser_evidence']['extension_version']=data['extension_version']
+                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败'}
+                if data.get('failure_code') in reasons:
+                    paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
+                elif observed=='DOWNLOADING':paper.pop('reason',None)
             pending=[i for i,p in enumerate(state['papers']) if p['status'] not in TERMINAL]
             state['status']='FINISHED' if not pending else paper['status']
             state['current_index']=pending[0] if pending else None
@@ -125,7 +133,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.0'}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.1'}); return
             if self.path=='/tasks':
                 self.send_json(200,{'tasks':bridge.tasks()}); return
             self.send_json(404,{'status':'NOT_FOUND'})
