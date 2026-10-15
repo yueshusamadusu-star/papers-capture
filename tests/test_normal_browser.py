@@ -40,6 +40,19 @@ class NormalBrowserTests(unittest.TestCase):
         html=p.with_suffix('.htm');p.rename(html);p=html
         result=self.bridge.update({'session_id':self.sid,'index':0,'download_path':str(p)},True)
         self.assertEqual(result['actual_pdf_count'],0);self.assertEqual(result['papers'][0]['status'],'ACCESS_UNKNOWN')
+    def test_verification_html_enters_native_save_without_counting(self):
+        source=self.file(b'<html><title>Security verification</title><script src="https://challenges.cloudflare.com/turnstile.js"></script></html>')
+        target=source.with_name('init.htm');source.rename(target)
+        result=self.bridge.update({'session_id':self.sid,'index':0,'download_path':str(target)},True)
+        self.assertEqual(result['actual_pdf_count'],0)
+        self.assertEqual(result['papers'][0]['status'],'NEED_BROWSER_SAVE')
+        self.assertTrue(result['papers'][0]['native_save_required'])
+    def test_native_save_success_clears_requirement(self):
+        self.state['papers'][0]['native_save_required']=True;self.manager.save(self.state)
+        source=self.file(b'%PDF-1.4\nfixture\n%%EOF')
+        result=self.bridge.update({'session_id':self.sid,'index':0,'download_path':str(source)},True)
+        self.assertEqual(result['actual_pdf_count'],1)
+        self.assertNotIn('native_save_required',result['papers'][0])
     def test_arbitrary_local_file_rejected(self):
         p=Path(self.temp.name)/'secret.pdf';p.write_bytes(b'%PDF-1.4\nsecret\n%%EOF')
         with self.assertRaises(HelperError):self.bridge.update({'session_id':self.sid,'index':0,'download_path':str(p)},True)

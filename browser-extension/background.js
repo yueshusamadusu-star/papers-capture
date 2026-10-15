@@ -8,12 +8,12 @@ const articlePii=value=>{try{return new URL(value).pathname.match(/\/pii\/(S[0-9
 const assetPii=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="pdf.sciencedirectassets.com"||u.username||u.password)return "";const id=u.pathname.match(/\/1-s2\.0-(S[0-9X]{16})\/main\.pdf$/i)?.[1]?.toUpperCase()||"";return u.searchParams.has("pii")&&u.searchParams.get("pii").toUpperCase()!==id?"":id;}catch{return "";}};
 const doi=value=>String(value||"").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,"").toLowerCase();
 const checking=new Set(),completing=new Set(),opening=new Set(),transfers=new Set();
-const failureMessages={NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
+const failureMessages={DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
 async function reportFailure(code,job){
  const key=code in failureMessages?code:"BROWSER_OPERATION";
  await chrome.storage.local.set({lastFailure:{code:key,summary:failureMessages[key],when:new Date().toISOString()}});
  await chrome.action.setBadgeText({text:"!"});
- if(job)try{await progress(job,"DOWNLOAD_ERROR",true,{failure_code:key});}catch{}
+ if(job)try{await progress(job,key==="DOWNLOAD_SECURITY"?"NEED_BROWSER_SAVE":"DOWNLOAD_ERROR",true,{failure_code:key});}catch{}
 }
 async function clearFailure(){await chrome.storage.local.remove("lastFailure");await chrome.action.setBadgeText({text:""});}
 
@@ -23,7 +23,7 @@ async function api(path,data){
  if(!response.ok)throw Error("本机接续未完成，请查看任务状态或下载目录设置");return response.json();
 }
 async function progress(job,status,identity=false,s={}){return api("/observe",{session_id:job.session_id,index:job.index,status,identity_matched:identity,
- institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{})});}
+ institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{}),...(s.download_method?{download_method:s.download_method}:{})});}
 async function openNext(sessionId){
  if(opening.has(sessionId))return {status:"OPENING"};opening.add(sessionId);
  try{
@@ -55,7 +55,7 @@ async function startDownload(tabId,job,url,snapshot={},force=false){
  transfers.add(key);
  try{
   job.attempted=signature;const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
-  await progress(job,"DOWNLOADING",true,snapshot);
+  await progress(job,"DOWNLOADING",true,{...snapshot,download_method:"EXTENSION_REQUEST"});
   const id=await chrome.downloads.download({url,filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify",saveAs:false});
   const {downloads={}}=await chrome.storage.local.get("downloads");downloads[id]=job;await chrome.storage.local.set({downloads});
   const items=await chrome.downloads.search({id});if(items[0]?.state==="complete")await completedDownload(id);
@@ -85,6 +85,12 @@ async function checkTab(tabId,force=false){
   if(assetPii(tab.url)){
    const expected=job.expected_pii||articlePii(job.article_page);
    if(!job.identity_verified||expected!==assetPii(tab.url))return {status:"最终PDF与原论文身份不一致，未下载"};
+   const {tasks}=await api("/tasks"),paper=tasks.find(t=>t.session_id===job.session_id)?.papers[job.index];
+   if(paper?.native_save_required){
+    job.native_save_required=true;job.native_until=Date.now()+600000;managed[tabId]=job;await chrome.storage.local.set({managed});
+    await progress(job,"NEED_BROWSER_SAVE",true,{failure_code:"DOWNLOAD_SECURITY"});
+    return {status:"请点当前PDF阅读器右上角的下载按钮，工具将接收并归档"};
+   }
    return startDownload(tabId,job,tab.url,{},force);
   }
   if(!allowed(tab.url))return {status:"请本人完成认证后返回论文页"};
@@ -126,7 +132,7 @@ async function completedDownload(id){
   if(item.state!=="complete")return;
   const state=await api("/complete",{session_id:job.session_id,index:job.index,download_path:item.filename});delete downloads[id];await chrome.storage.local.set({downloads});
   if(["SAVED","ALREADY_EXISTS"].includes(state.papers[job.index].status)){await clearFailure();await openNext(job.session_id);}
-  else await reportFailure("NOT_PDF",job);
+  else await reportFailure(state.papers[job.index].native_save_required?"DOWNLOAD_SECURITY":"NOT_PDF",job);
  }finally{completing.delete(id);}
 }
 async function reconcileDownloads(){
@@ -134,16 +140,22 @@ async function reconcileDownloads(){
  for(const key of Object.keys(downloads))try{await completedDownload(Number(key));}catch{await reportFailure("LOCAL_API");}
 }
 async function nativeDownloadJob(item){
- const {managed={}}=await chrome.storage.local.get("managed");
- return Object.values(managed).find(job=>job.identity_verified&&job.native_until>Date.now()&&allowed(item.referrer)&&
-  [job.viewer_url,job.article_page].some(u=>u&&samePage(item.referrer,u))&&
-  (samePage(item.url,job.viewer_url)||/\.pdf(?:[?#]|$)/i.test(item.url)||/\.pdf$/i.test(item.filename||"")));
+ const {managed={},activeSessionId}=await chrome.storage.local.get(["managed","activeSessionId"]);
+ let activePii="";
+ if(/^blob:https:\/\/pdf\.sciencedirectassets\.com\//i.test(item.url||"")&&/^application\/pdf/i.test(item.mime||"")){
+  const [active]=await chrome.tabs.query({active:true,currentWindow:true});if(active)activePii=assetPii((await chrome.tabs.get(active.id)).url);
+ }
+ return Object.values(managed).find(job=>job.session_id===activeSessionId&&job.identity_verified&&job.native_until>Date.now()&&(
+  ((job.expected_pii||articlePii(job.article_page))&&([item.url,item.finalUrl].some(u=>assetPii(u)===(job.expected_pii||articlePii(job.article_page)))||activePii===(job.expected_pii||articlePii(job.article_page))))||
+  (allowed(item.referrer)&&[job.viewer_url,job.article_page].some(u=>u&&samePage(item.referrer,u))&&
+   (samePage(item.url,job.viewer_url)||/\.pdf(?:[?#]|$)/i.test(item.url)||/\.pdf$/i.test(item.filename||"")))));
 }
 chrome.downloads.onDeterminingFilename.addListener((item,suggest)=>{
  (async()=>{
   const job=await nativeDownloadJob(item);if(!job){suggest();return;}
+  if(/^text\/html/i.test(item.mime||"")){await chrome.downloads.cancel(item.id);await reportFailure("DOWNLOAD_SECURITY",job);suggest();return;}
   const {downloads={}}=await chrome.storage.local.get("downloads");downloads[item.id]=job;await chrome.storage.local.set({downloads});
-  await progress(job,"DOWNLOADING",true);suggest({filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify"});
+  await progress(job,"DOWNLOADING",true,{download_method:"BROWSER_NATIVE"});suggest({filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify"});
  })().catch(()=>suggest());return true;
 });
 chrome.downloads.onChanged.addListener(delta=>{if(delta.state)completedDownload(delta.id).catch(()=>reportFailure("LOCAL_API"));});

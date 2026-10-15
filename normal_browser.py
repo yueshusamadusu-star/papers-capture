@@ -80,7 +80,7 @@ class RegularBridge:
             if completed:
                 source=Path(data.get('download_path','')).resolve()
                 expected=self.download_root/'papers-capture'/state['session_id']
-                if source.parent!=expected or source.is_symlink() or not re.fullmatch(str(index)+r'(?: \(\d+\))?\.(?:pdf|htm|html)',source.name) or not source.is_file():
+                if source.parent!=expected or source.is_symlink() or not re.fullmatch(r'(?:'+str(index)+r'(?: \(\d+\))?\.pdf|[^\x00/\\]+\.html?)',source.name,re.I) or not source.is_file():
                     raise HelperError('下载文件不在本任务专用收件目录；可设置LIT_BROWSER_DOWNLOAD_DIR匹配浏览器目录')
                 with source.open('rb') as f: body=f.read(MAX_PDF+1)
                 try:
@@ -88,29 +88,38 @@ class RegularBridge:
                            'paper_identity':'EXPECTED_DOI_MATCHED_BEFORE_DOWNLOAD','entitlement_evidence':'BROWSER_DOWNLOAD_COMPLETE_AND_VALID_PDF',
                            'note':'在本人正常浏览器内下载；不导出Cookie/密码，保留原下载文件'})
                 except PdfResponseError:
-                    paper['status']='ACCESS_UNKNOWN'
-                    paper['reason']='下载结果不是完整PDF，可能为预览/登录/验证页；未计入全文'
+                    if b'security verification' in body.lower() or b'challenges.cloudflare.com' in body.lower():
+                        paper['status']='NEED_BROWSER_SAVE';paper['native_save_required']=True
+                        paper['reason']='下载请求返回网站安全验证页；停止自动重试，请在已打开的PDF阅读器点下载'
+                    else:
+                        paper['status']='ACCESS_UNKNOWN'
+                        paper['reason']='下载结果不是完整PDF，可能为预览/登录/验证页；未计入全文'
                 else:
                     paper['status'],paper['file']=result['status'],result
                     paper.pop('reason',None)
+                    paper.pop('native_save_required',None)
                     paper.get('browser_evidence',{}).pop('failure_code',None)
             else:
                 observed=data.get('status')
-                allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR'}
+                allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR','NEED_BROWSER_SAVE'}
                 if observed not in allowed:
                     raise HelperError('不支持的浏览器观察状态')
                 if observed=='SKIPPED_NO_ACCESS' and (data.get('identity_matched') is not True or data.get('institution_recognized') is not True):
                     raise HelperError('缺少本篇身份或机构识别，不接受无权限结论')
+                if observed=='DOWNLOAD_ERROR' and paper.get('native_save_required'):observed='NEED_BROWSER_SAVE'
+                if observed=='NEED_BROWSER_SAVE':paper['native_save_required']=True
                 paper['status']=observed
                 paper['browser_evidence']={'identity_matched':bool(data.get('identity_matched')),'backend':'regular_extension','observed_state':observed,
                     'institution_recognized':data.get('institution_recognized') is True, 'visible_auth_form':data.get('visible_auth_form') is True,
                     'pdf_candidates':min(6,max(0,data.get('pdf_candidates',0))) if type(data.get('pdf_candidates',0)) is int else 0}
                 if re.fullmatch(r'\d+\.\d+\.\d+',str(data.get('extension_version',''))):
                     paper['browser_evidence']['extension_version']=data['extension_version']
-                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败'}
+                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载'}
                 if data.get('failure_code') in reasons:
                     paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
                 elif observed=='DOWNLOADING':paper.pop('reason',None)
+                if data.get('download_method') in {'EXTENSION_REQUEST','BROWSER_NATIVE'}:
+                    paper['browser_evidence']['download_method']=data['download_method']
             pending=[i for i,p in enumerate(state['papers']) if p['status'] not in TERMINAL]
             state['status']='FINISHED' if not pending else paper['status']
             state['current_index']=pending[0] if pending else None
@@ -133,7 +142,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.1'}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.2'}); return
             if self.path=='/tasks':
                 self.send_json(200,{'tasks':bridge.tasks()}); return
             self.send_json(404,{'status':'NOT_FOUND'})

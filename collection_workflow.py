@@ -208,7 +208,7 @@ def render_collection(state):
     esc = lambda s: html.escape(str(s), quote=True)
     labels = {"SAVED": "已保存PDF", "ALREADY_EXISTS": "PDF已存在", "BROWSER_PENDING": "等待浏览器检查", "PUBLIC_PENDING": "等待公开来源检查",
               "NEED_USER_AUTHENTICATION": "请在所选浏览器本人登录", "ACCESS_UNKNOWN": "权限尚不确定", "CHALLENGE_REQUIRED": "请本人完成网站验证",
-              "SKIPPED_NO_ACCESS": "本篇无全文权限，已退避", "SKIPPED_BY_USER": "本人跳过", "ERROR": "请求失败", "UNSUPPORTED_PUBLISHER": "尚未适配的出版商"}
+              "NEED_BROWSER_SAVE": "请点已打开PDF阅读器的下载按钮，工具接收归档", "SKIPPED_NO_ACCESS": "本篇无全文权限，已退避", "SKIPPED_BY_USER": "本人跳过", "ERROR": "请求失败", "UNSUPPORTED_PUBLISHER": "尚未适配的出版商"}
     cards = []
     for p in state["papers"]:
         href = article_url(p["doi"])
