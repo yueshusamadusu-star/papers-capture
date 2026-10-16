@@ -6,7 +6,10 @@ const samePage=(a,b)=>{try{const x=new URL(a),y=new URL(b);return x.origin===y.o
 const safePage=value=>{const u=new URL(value);return u.origin+u.pathname;};
 const articlePii=value=>{try{return new URL(value).pathname.match(/\/pii\/(S[0-9X]{16})(?:\/|$)/i)?.[1]?.toUpperCase()||"";}catch{return "";}};
 const assetPii=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="pdf.sciencedirectassets.com"||u.username||u.password)return "";const id=u.pathname.match(/\/1-s2\.0-(S[0-9X]{16})\/main\.pdf$/i)?.[1]?.toUpperCase()||"";return u.searchParams.has("pii")&&u.searchParams.get("pii").toUpperCase()!==id?"":id;}catch{return "";}};
-const doi=value=>String(value||"").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,"").toLowerCase();
+const doi=value=>String(value||"").trim().replace(/^doi:\s*/i,"").replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,"").toLowerCase();
+const validDoi=value=>/^10\.\d{4,9}\/\S+$/i.test(doi(value));
+const ieeeArticleId=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="ieeexplore.ieee.org"||u.username||u.password)return "";return u.pathname.match(/^\/(?:abstract\/)?document\/([0-9]+)\/?$/)?.[1]||(/^\/(?:stamp\/stamp\.jsp|stampPDF\/getPDF\.jsp)$/i.test(u.pathname)&&/^[0-9]+$/.test(u.searchParams.get("arnumber")||"")?u.searchParams.get("arnumber"):"");}catch{return "";}};
+const ieeeArticlePage=value=>{try{return /^\/(?:abstract\/)?document\/[0-9]+\/?$/.test(new URL(value).pathname)&&Boolean(ieeeArticleId(value));}catch{return false;}};
 const checking=new Set(),completing=new Set(),opening=new Set(),transfers=new Set();
 const failureMessages={DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
 async function reportFailure(code,job){
@@ -23,7 +26,7 @@ async function api(path,data){
  if(!response.ok)throw Error("本机接续未完成，请查看任务状态或下载目录设置");return response.json();
 }
 async function progress(job,status,identity=false,s={}){return api("/observe",{session_id:job.session_id,index:job.index,status,identity_matched:identity,
- institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{}),...(s.download_method?{download_method:s.download_method}:{})});}
+ institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{}),...(s.download_method?{download_method:s.download_method}:{}),...((s.identity_source||job.identity_source)?{identity_source:s.identity_source||job.identity_source}:{})});}
 async function openNext(sessionId){
  if(opening.has(sessionId))return {status:"OPENING"};opening.add(sessionId);
  try{
@@ -32,7 +35,7 @@ async function openNext(sessionId){
   const index=task.papers.findIndex(p=>!terminal.includes(p.status));if(index<0)return {status:"FINISHED"};
   const paper=task.papers[index];await chrome.storage.local.set({activeSessionId:sessionId});
   const tab=await chrome.tabs.create({url:paper.article_url});const {managed={}}=await chrome.storage.local.get("managed");
-  managed[tab.id]={session_id:sessionId,index,doi:paper.doi,attempted:""};await chrome.storage.local.set({managed});
+  managed[tab.id]={session_id:sessionId,index,doi:paper.doi,attempted:"",ieee_article_id:ieeeArticleId(paper.publisher_article_url||paper.article_url)};await chrome.storage.local.set({managed});
   if((await chrome.tabs.get(tab.id)).status==="complete")await checkTab(tab.id);
   return {status:"OPENED",title:paper.title};
  }finally{opening.delete(sessionId);}
@@ -73,15 +76,22 @@ async function adoptCurrent(tab){
   if(!source)throw Error("此PDF未与本任务原论文对应，请返回原论文页");
   managed[tab.id]={...source,expected_pii:assetPii(tab.url)};await chrome.storage.local.set({managed});return;
  }
- const s=await inspect(tab.id);const index=task.papers.findIndex(p=>doi(p.doi)===doi(s?.doi));
+ const s=await inspect(tab.id);const index=task.papers.findIndex(p=>doi(p.doi)===doi(s?.doi) ||
+  (!validDoi(s?.doi)&&ieeeArticlePage(tab.url)&&ieeeArticleId(tab.url)===ieeeArticleId(p.publisher_article_url||p.article_url)));
  if(index<0)throw Error("当前页面身份未匹配本任务；请返回原论文页");
- managed[tab.id]={session_id:activeSessionId,index,doi:task.papers[index].doi,attempted:""};await chrome.storage.local.set({managed});
+ managed[tab.id]={session_id:activeSessionId,index,doi:task.papers[index].doi,attempted:"",ieee_article_id:ieeeArticleId(task.papers[index].publisher_article_url||task.papers[index].article_url)};await chrome.storage.local.set({managed});
 }
 async function checkTab(tabId,force=false){
  if(checking.has(tabId))return {status:"CHECKING"};checking.add(tabId);
  try{
   const {managed={}}=await chrome.storage.local.get("managed"),job=managed[tabId];if(!job)return {status:"NOT_TRACKED"};
   const tab=await chrome.tabs.get(tabId);
+  // 为升级前已打开的任务补上已登记的出版方文章编号，不从当前页面猜对应。
+  if(!job.ieee_article_id&&ieeeArticleId(tab.url)){
+   const {tasks}=await api("/tasks"),paper=tasks.find(t=>t.session_id===job.session_id)?.papers[job.index];
+   const bound=ieeeArticleId(paper?.publisher_article_url||paper?.article_url);
+   if(bound){job.ieee_article_id=bound;managed[tabId]=job;await chrome.storage.local.set({managed});}
+  }
   if(assetPii(tab.url)){
    const expected=job.expected_pii||articlePii(job.article_page);
    if(!job.identity_verified||expected!==assetPii(tab.url))return {status:"最终PDF与原论文身份不一致，未下载"};
@@ -96,10 +106,13 @@ async function checkTab(tabId,force=false){
   if(!allowed(tab.url))return {status:"请本人完成认证后返回论文页"};
   const s=await inspect(tabId);if(!s)return {status:"ACCESS_UNKNOWN"};
   if(s.challenge){await progress(job,"CHALLENGE_REQUIRED",false,s);return {status:"请本人完成网站验证"};}
-  const matched=doi(s.doi)===doi(job.doi),viewer=Boolean(job.identity_verified&&job.viewer_url===tab.url);
+  const doiMatched=doi(s.doi)===doi(job.doi);
+  const recordMatched=Boolean(!validDoi(s.doi)&&job.ieee_article_id&&ieeeArticlePage(tab.url)&&ieeeArticleId(tab.url)===job.ieee_article_id);
+  const matched=doiMatched||recordMatched,viewer=Boolean(job.identity_verified&&job.viewer_url===tab.url);
+  if(matched||viewer){job.identity_source=doiMatched?"PAGE_DOI":recordMatched?"IEEE_ARTICLE_URL":"VERIFIED_PDF_VIEWER";s.identity_source=job.identity_source;}
   if(!matched&&!viewer){await progress(job,s.password_form?"NEED_USER_AUTHENTICATION":"ACCESS_UNKNOWN",false,s);return {status:"请返回本篇论文页后再次检查"};}
   // 已匹配论文的PDF候选优先于旁边的个人登录组件；隐藏表单不算认证页面。
-  const pdf=(matched?s.pdf_links:(s.viewer_pdf_links||[])).find(u=>allowed(u)||assetPii(u));
+  const pdf=(matched?s.pdf_links:(s.viewer_pdf_links||[])).find(u=>(allowed(u)||assetPii(u))&&(!job.ieee_article_id||ieeeArticleId(u)===job.ieee_article_id));
   if(matched&&articlePii(tab.url)){
    job.identity_verified=true;job.expected_pii=articlePii(tab.url);job.article_page=safePage(tab.url);
    if(!force&&job.control_clicked)return {status:"等待官网生成的最终PDF"};
@@ -145,7 +158,10 @@ async function nativeDownloadJob(item){
  if(/^blob:https:\/\/pdf\.sciencedirectassets\.com\//i.test(item.url||"")&&/^application\/pdf/i.test(item.mime||"")){
   const [active]=await chrome.tabs.query({active:true,currentWindow:true});if(active)activePii=assetPii((await chrome.tabs.get(active.id)).url);
  }
- return Object.values(managed).find(job=>job.session_id===activeSessionId&&job.identity_verified&&job.native_until>Date.now()&&(
+ return Object.values(managed).find(job=>job.session_id===activeSessionId&&job.identity_verified&&job.native_until>Date.now()&&
+  (!job.ieee_article_id||[item.url,item.finalUrl].some(u=>ieeeArticleId(u)===job.ieee_article_id))&&(
+  (job.ieee_article_id&&[item.url,item.finalUrl].some(u=>ieeeArticleId(u)===job.ieee_article_id))||
+
   ((job.expected_pii||articlePii(job.article_page))&&([item.url,item.finalUrl].some(u=>assetPii(u)===(job.expected_pii||articlePii(job.article_page)))||activePii===(job.expected_pii||articlePii(job.article_page))))||
   (allowed(item.referrer)&&[job.viewer_url,job.article_page].some(u=>u&&samePage(item.referrer,u))&&
    (samePage(item.url,job.viewer_url)||/\.pdf(?:[?#]|$)/i.test(item.url)||/\.pdf$/i.test(item.filename||"")))));

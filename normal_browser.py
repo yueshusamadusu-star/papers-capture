@@ -85,7 +85,7 @@ class RegularBridge:
                 with source.open('rb') as f: body=f.read(MAX_PDF+1)
                 try:
                     result=self.manager.helper._save_pdf(body,paper['doi'],{'origin':'regular_browser_extension',
-                           'paper_identity':'EXPECTED_DOI_MATCHED_BEFORE_DOWNLOAD','entitlement_evidence':'BROWSER_DOWNLOAD_COMPLETE_AND_VALID_PDF',
+                           'paper_identity':'EXPECTED_PAPER_IDENTITY_MATCHED_BEFORE_DOWNLOAD','entitlement_evidence':'BROWSER_DOWNLOAD_COMPLETE_AND_VALID_PDF',
                            'note':'在本人正常浏览器内下载；不导出Cookie/密码，保留原下载文件'})
                 except PdfResponseError:
                     if b'security verification' in body.lower() or b'challenges.cloudflare.com' in body.lower():
@@ -114,6 +114,8 @@ class RegularBridge:
                     'pdf_candidates':min(6,max(0,data.get('pdf_candidates',0))) if type(data.get('pdf_candidates',0)) is int else 0}
                 if re.fullmatch(r'\d+\.\d+\.\d+',str(data.get('extension_version',''))):
                     paper['browser_evidence']['extension_version']=data['extension_version']
+                if data.get('identity_source') in {'PAGE_DOI','IEEE_ARTICLE_URL','VERIFIED_PDF_VIEWER'}:
+                    paper['browser_evidence']['identity_source']=data['identity_source']
                 reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载'}
                 if data.get('failure_code') in reasons:
                     paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
@@ -142,7 +144,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.2'}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.3'}); return
             if self.path=='/tasks':
                 self.send_json(200,{'tasks':bridge.tasks()}); return
             self.send_json(404,{'status':'NOT_FOUND'})

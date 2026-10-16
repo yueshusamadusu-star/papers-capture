@@ -1,5 +1,12 @@
 # 版本记录
 
+## 0.4.3 — 2026-10-17
+
+- IEEE实测检测到机构及一个PDF候选，但identity_matched=false，没有下载；据此修复论文身份识别，不把它判为无订阅。
+- Crossref官方primary文章URL绑定准确IEEE文章编号；DOI缺失或非DOI标记时可核对该编号。有效冲突DOI、错文章、错PDF和相似域仍拒绝，原生下载按同篇编号接收。
+- 记录PAGE_DOI / IEEE_ARTICLE_URL / VERIFIED_PDF_VIEWER身份来源，来源manifest不再把文章编号核对写成页面DOI直接匹配。
+- 3项元数据、15项本机桥、23类扩展模拟及17工具真实stdio检查通过；桥服务0.4.3已就绪。当前公开IEEE样例真实PDF仍待本人浏览器复验，不代表订阅验收。
+
 ## 0.4.2 接续修复 — 2026-10-17
 
 - 作者报告本机8766服务无法打开；核验监听未运行，恢复后健康检查READY，已有任务文件逐字节不变，ScienceDirect一篇仍SAVED、IEEE仍未知。

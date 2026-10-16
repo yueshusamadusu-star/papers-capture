@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 MAX_PDF = 25 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
 # 首版仅自动下载这些公共来源；其余 OA 链接返回人工处理。
@@ -147,7 +147,14 @@ def normalize_doi(value: str) -> str:
 
 def summarize(work: dict) -> dict:
     parts = (work.get("published") or {}).get("date-parts") or [[]]
-    return {"doi": work.get("DOI"), "title": (work.get("title") or [""])[0],
+    primary = ((work.get("resource") or {}).get("primary") or {}).get("URL", "")
+    parsed = urlsplit(primary)
+    canonical = (parsed.scheme + "://" + parsed.netloc + parsed.path
+                 if parsed.scheme == "https" and parsed.hostname == "ieeexplore.ieee.org"
+                 and not parsed.username and not parsed.password
+                 and re.fullmatch(r"/(?:abstract/)?document/[0-9]+/?", parsed.path) else None)
+    return {"doi": work.get("DOI"), **({"publisher_article_url": canonical} if canonical else {}),
+            "title": (work.get("title") or [""])[0],
             "authors": [" ".join(filter(None, [a.get("given"), a.get("family"), a.get("name")]))
                         for a in work.get("author", [])],
             "year": parts[0][0] if parts and parts[0] else None,
@@ -258,6 +265,8 @@ class LiteratureHelper:
         work = self.client.json(url).get("message")
         if not isinstance(work, dict):
             raise HelperError("未取得该 DOI 的 Crossref 记录")
+        if normalize_doi(work.get("DOI") or "") != doi:
+            raise HelperError("Crossref返回了其他DOI，停止建立论文身份对应")
         return {"status": "METADATA_ONLY", "paper": summarize(work)}
 
     def locate_oa(self, doi: str) -> dict:

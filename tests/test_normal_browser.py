@@ -113,6 +113,14 @@ class NormalBrowserTests(unittest.TestCase):
         ensure.assert_not_called()
         self.assertEqual(result["status"], "CLOSED")
 
+    def test_identity_source_is_whitelisted_and_preserved(self):
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "status": "ACCESS_UNKNOWN",
+                                     "identity_matched": True, "identity_source": "IEEE_ARTICLE_URL"})
+        self.assertEqual(result["papers"][0]["browser_evidence"]["identity_source"], "IEEE_ARTICLE_URL")
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "status": "ACCESS_UNKNOWN",
+                                     "identity_matched": False, "identity_source": "https://example.invalid/?private=value"})
+        self.assertNotIn("identity_source", result["papers"][0]["browser_evidence"])
+
     def test_wheel_extension_directory(self):
         root=Path(self.temp.name)
         installed=root/'prefix'/'share'/'papers-capture'/'browser-extension'
