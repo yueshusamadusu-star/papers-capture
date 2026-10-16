@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "papers-capture 文献接续",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "本人认证后核对选定论文并保存PDF，只连接本机文献工具",
   "permissions": [
     "activeTab",
     "scripting",
     "downloads",
-    "storage"
+    "storage",
+    "proxy"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",

@@ -19,6 +19,7 @@ import webbrowser
 from literature_helper import LiteratureHelper, HelperError, MAX_PDF, PdfResponseError
 from collection_workflow import CollectionManager, atomic_json, now
 from browser_worker import TERMINAL
+from ieee_network import IeeeNetworkPolicy
 
 ORIGIN = "http://127.0.0.1:8766"
 
@@ -55,6 +56,7 @@ class RegularBridge:
         configured=json.loads(settings.read_text(encoding='utf-8')).get('download_directory') if settings.is_file() else None
         self.download_root=Path(download_root or os.environ.get('LIT_BROWSER_DOWNLOAD_DIR') or configured or downloads_directory()).resolve()
         self.lock=threading.Lock()
+        self.network=IeeeNetworkPolicy(manager.browser_dir)
 
     def tasks(self):
         result=[]
@@ -101,7 +103,7 @@ class RegularBridge:
                     paper.get('browser_evidence',{}).pop('failure_code',None)
             else:
                 observed=data.get('status')
-                allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR','NEED_BROWSER_SAVE'}
+                allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR','NEED_BROWSER_SAVE','NEED_IEEE_NETWORK_ROUTE'}
                 if observed not in allowed:
                     raise HelperError('不支持的浏览器观察状态')
                 if observed=='SKIPPED_NO_ACCESS' and (data.get('identity_matched') is not True or data.get('institution_recognized') is not True):
@@ -116,7 +118,7 @@ class RegularBridge:
                     paper['browser_evidence']['extension_version']=data['extension_version']
                 if data.get('identity_source') in {'PAGE_DOI','IEEE_ARTICLE_URL','VERIFIED_PDF_VIEWER'}:
                     paper['browser_evidence']['identity_source']=data['identity_source']
-                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载'}
+                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载','IEEE_HTTP_418':'IEEE返回418，先核对校园网直连路线，未判无订阅','IEEE_NETWORK_ERROR':'IEEE网络访问失败，先核对直连路线，未判无订阅'}
                 if data.get('failure_code') in reasons:
                     paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
                 elif observed=='DOWNLOADING':paper.pop('reason',None)
@@ -144,19 +146,29 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.3'}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.5'}); return
+            if self.path=='/ieee-network':
+                self.send_json(200,bridge.network.status()); return
+            if self.path=='/ieee-network-template':
+                self.send_json(200,bridge.network.browser_template()); return
             if self.path=='/tasks':
                 self.send_json(200,{'tasks':bridge.tasks()}); return
             self.send_json(404,{'status':'NOT_FOUND'})
         def do_POST(self):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
-            if self.path not in {'/observe','/complete'}:
+            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic'}:
                 self.send_json(404,{'status':'NOT_FOUND'}); return
             try:
                 count=int(self.headers.get('Content-Length','0'))
                 if not 0<count<=8192: raise HelperError('请求大小不合要求')
                 data=json.loads(self.rfile.read(count))
+                if self.path=='/ieee-browser-diagnostic':
+                    self.send_json(200,bridge.network.record_browser(data)); return
+                if self.path=='/ieee-network':
+                    if data.get('action') not in {'enable','restore'}:
+                        raise HelperError('IEEE网络操作无效')
+                    self.send_json(200,getattr(bridge.network,data['action'])()); return
                 self.send_json(200,bridge.update(data,self.path=='/complete'))
             except (HelperError,OSError,ValueError,TypeError):
                 self.send_json(400,{'status':'REJECTED','message':'状态或下载文件校验失败，未冒称已保存；浏览器自定义下载目录需配置LIT_BROWSER_DOWNLOAD_DIR'})

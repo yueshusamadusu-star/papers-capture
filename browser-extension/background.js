@@ -1,4 +1,5 @@
 "use strict";
+importScripts("chrome_ieee.js");
 const ORIGIN="http://127.0.0.1:8766";
 const domains=["sciencedirect.com","elsevier.com","ieee.org","scitepress.org","mdpi.com","mdpi-res.com","arxiv.org","ncbi.nlm.nih.gov","springer.com","springerlink.com","nature.com","wiley.com","tandfonline.com","acm.org","cambridge.org","oup.com","sagepub.com","iop.org","aps.org","aip.org"];
 const allowed=value=>{try{const u=new URL(value);return u.protocol==="https:"&&!u.username&&!u.password&&domains.some(d=>u.hostname===d||u.hostname.endsWith("."+d));}catch{return false;}};
@@ -34,10 +35,21 @@ async function openNext(sessionId){
   const terminal=["SAVED","ALREADY_EXISTS","SKIPPED_NO_ACCESS","SKIPPED_BY_USER","ERROR","UNSUPPORTED_PUBLISHER"];
   const index=task.papers.findIndex(p=>!terminal.includes(p.status));if(index<0)return {status:"FINISHED"};
   const paper=task.papers[index];await chrome.storage.local.set({activeSessionId:sessionId});
+  let routeNote="";
+  if(/^10\.1109\//i.test(paper.doi||"")){
+   const route=await api("/ieee-network");
+   const browserRoute=await chromeIeeeRoute.read();
+   if(browserRoute.enabled&&!browserRoute.configuration_verified)return {status:"Chrome的IEEE规则未确认，请点“检查Chrome代理”查看原因"};
+   routeNote=browserRoute.configuration_verified?"IEEE：Chrome已读回专用直连规则，实际访问仍需核对":route.direct_rule_present?"IEEE：已配置系统直连例外；418先核对网络":"IEEE：可使用校园网直连或本人机构访问入口";
+   if(!browserRoute.configuration_verified&&route.policy_enabled&&!route.direct_rule_present&&route.status!=="NO_SYSTEM_PROXY"){
+    await progress({session_id:sessionId,index},"NEED_IEEE_NETWORK_ROUTE",false,{failure_code:"IEEE_NETWORK_ERROR"});
+    return {status:"IEEE直连规则尚未生效，请点“IEEE校园网直连”后接续"};
+   }
+  }
   const tab=await chrome.tabs.create({url:paper.article_url});const {managed={}}=await chrome.storage.local.get("managed");
   managed[tab.id]={session_id:sessionId,index,doi:paper.doi,attempted:"",ieee_article_id:ieeeArticleId(paper.publisher_article_url||paper.article_url)};await chrome.storage.local.set({managed});
   if((await chrome.tabs.get(tab.id)).status==="complete")await checkTab(tab.id);
-  return {status:"OPENED",title:paper.title};
+  return {status:"OPENED",title:paper.title,route_note:routeNote};
  }finally{opening.delete(sessionId);}
 }
 async function inspect(tabId){const results=await chrome.scripting.executeScript({target:{tabId},files:["inspect.js"]});return results[0]?.result;}
@@ -105,6 +117,10 @@ async function checkTab(tabId,force=false){
   }
   if(!allowed(tab.url))return {status:"请本人完成认证后返回论文页"};
   const s=await inspect(tabId);if(!s)return {status:"ACCESS_UNKNOWN"};
+  if(job.ieee_article_id&&s.ieee_network_error){
+   await progress(job,"NEED_IEEE_NETWORK_ROUTE",false,{...s,failure_code:"IEEE_HTTP_418"});
+   return {status:"IEEE返回418，请检查Chrome代理规则或原代理软件的IEEE直连；不要反复登录，保持当前任务"};
+  }
   if(s.challenge){await progress(job,"CHALLENGE_REQUIRED",false,s);return {status:"请本人完成网站验证"};}
   const doiMatched=doi(s.doi)===doi(job.doi);
   const recordMatched=Boolean(!validDoi(s.doi)&&job.ieee_article_id&&ieeeArticlePage(tab.url)&&ieeeArticleId(tab.url)===job.ieee_article_id);
@@ -130,6 +146,11 @@ async function checkTab(tabId,force=false){
     await chrome.tabs.update(tabId,{url:pdf});setTimeout(()=>checkTab(tabId).catch(()=>{}),3000);return {status:"正在打开本篇PDF预览/下载准备页"};
    }
    return startDownload(tabId,job,pdf,s,force);
+  }
+  if(viewer&&job.ieee_article_id&&!pdf&&!s.no_access&&!s.password_form){
+   job.native_until=Date.now()+600000;managed[tabId]=job;await chrome.storage.local.set({managed});
+   await progress(job,"NEED_BROWSER_SAVE",true,s);
+   return {status:"若已能看见完整PDF，请点阅读器下载按钮，工具接收归档；若页面报418，先核对IEEE直连"};
   }
   if(s.institution_recognized&&s.no_access){await progress(job,"SKIPPED_NO_ACCESS",true,s);await openNext(job.session_id);return {status:"本篇无权限，已退避"};}
   const status=s.password_form||s.auth_links.length||s.no_access?"NEED_USER_AUTHENTICATION":"ACCESS_UNKNOWN";
@@ -188,6 +209,27 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
    await chrome.storage.local.set({token:message.token});await api("/health");return {status:"PAIRED"};
   }
   if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure}=await chrome.storage.local.get("lastFailure");return {...result,last_failure:lastFailure};}
+  if(["chrome-ieee-inspect","chrome-ieee-enable","chrome-ieee-restore"].includes(message.action)){
+   let result;
+   if(message.action==="chrome-ieee-enable")result=await chromeIeeeRoute.enable(()=>api("/ieee-network-template"));
+   else if(message.action==="chrome-ieee-restore")result=await chromeIeeeRoute.restore();
+   else result=await chromeIeeeRoute.read();
+   try{await api("/ieee-browser-diagnostic",{...result,extension_version:chrome.runtime.getManifest().version});}catch{}
+   const notes={
+    BROWSER_RULE_CONFIGURED:"Chrome已采用IEEE直连规则，其他网站保留原代理；请重新打开IEEE论文验证。尚未确认校园网出口或PDF",
+    NEED_PROXY_PERMISSION:"扩展尚未取得Chrome代理权限，请更新扩展并确认权限",
+    BROWSER_OVERRIDE_CLEARED:"已撤销本扩展的Chrome代理控制，恢复原代理配置",
+    ALREADY_DIRECT:"Chrome设置为直连；若仍418，不能据此认定代理是原因"
+   };
+   return {status:notes[result.status]||("Chrome代理模式："+result.mode+"；控制来源："+result.level+"。尚未确认IEEE直连"),network:result};
+  }
+  if(message.action==="ieee-direct"){
+   const result=await api("/ieee-network",{action:"enable"});
+   return {status:result.direct_rule_present?"IEEE域名已加入系统代理直连例外；请回原论文页检查":"IEEE直连需在原代理软件中配置"};
+  }
+  if(message.action==="ieee-restore"){
+   await api("/ieee-network",{action:"restore"});return {status:"已撤销本工具添加的IEEE例外，保留其他代理设置"};
+  }
   if(message.action==="start")return openNext(message.session_id);
   if(message.action==="auth"){await chrome.tabs.create({url:"https://ds.carsi.edu.cn/"});return {status:"请在CARSI选择浙江大学，并选择IEEE或Elsevier SD"};}
   if(message.action==="check"){

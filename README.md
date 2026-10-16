@@ -1,6 +1,6 @@
 # papers-capture：提示词到文献全文
 
-0.4.3，2026-10-17。非浙大官方项目。代码MIT；文献按各自许可使用。
+0.4.5，2026-10-17。非浙大官方项目。代码MIT；文献按各自许可使用。
 
 ## 在agent中使用
 
@@ -55,6 +55,34 @@ ScienceDirect优先点击官网View PDF，跳转到精确的pdf.sciencedirectass
 IEEE页面可能有PDF入口和机构标识，却没有扩展原先读取的DOI元标签。0.4.3保留Crossref为该DOI登记的IEEE主文章网址，以准确文章编号核对当前页及预览/原生PDF下载；存在有效但冲突的页面DOI时仍拒绝，不从参考文献或购物入口猜身份。旧任务可从已核验的对应关系补入，不要求重复安装扩展；本次加载新代码需在扩展管理页刷新一次。
 
 作者所选10.1109/ACCESS.2022.3181725发表于IEEE Access，为公开获取样例。这可以检验IEEE下载与归档，不作为浙江大学订阅接续成功的证据。0.4.3当前真实PDF仍待本人浏览器复验；识别修复测试通过不记为下载成功。
+
+### IEEE校园网与代理分流
+
+IEEE开始任务时显示访问路线提示；明确418进入NEED_IEEE_NETWORK_ROUTE，暂停并保留论文，不判断为无订阅。已经匹配的IEEE预览页没有可提取链接时，可在本人确认完整PDF可读后点阅读器下载，工具按同篇编号接收；这条退路需要本人操作。
+
+Windows手动系统代理用户可点“IEEE校园网直连”：只向ProxyOverride添加ieee.org及*.ieee.org，保留现有条目、代理开关和代理地址。点“撤销IEEE直连例外”可移除本工具添加的条目，保留后来其他程序增加的例外。该系统例外也作用于其他遵循系统代理的应用访问IEEE；工具不会默认替新用户启用。备份只在私有浏览器目录ieee-route.json，不入Git。
+
+PAC配置不覆盖，其他平台给出原代理软件中设置DIRECT的人工路线。浏览器专用代理、策略或TUN可能决定实际连接；本机规则已配置不等于Chrome实际直连，更不等于PDF已保存。代理客户端重写例外后，已启用该策略的任务会暂停提示，不静默覆盖未知配置。
+
+本机CLI也可由agent显式使用（默认不改设置）：
+
+    python ieee_network.py status
+    python ieee_network.py enable
+    python ieee_network.py restore
+
+作者本机已明确要求IEEE不走代理；实际配置并核对IEEE绕过为true、聊天域名绕过为false，原代理开关及地址保持一致。一次直连HEAD响应202，未当作PDF或订阅成功。作者加载0.4.4后仍报告418；系统例外仍在，实际PDF数0。这一轮配置没有解决真实浏览器访问。
+
+### Chrome内的IEEE直连（0.4.5，按需启用）
+
+Chrome官方明确proxy不能列作可选权限，因此本版在manifest声明必需proxy权限，更新或加载时由本人确认浏览器权限提示；不能用运行时permissions.request索取它。扩展默认不改代理，只有在“IEEE网络设置”里点“Chrome：仅IEEE直连”才配置。先读取Chrome当前代理模式和控制来源；PAC、自动代理或更高优先级策略/扩展不自动覆盖。
+
+已有固定代理时只追加ieee.org和*.ieee.org例外，保留原代理服务器、协议与既有例外。Chrome使用system模式时，仅在本机服务核对Windows启用了无PAC的环回手动代理后使用其当前模板；不硬编码本机端口或远端节点。系统代理开关、BatVPN配置和聊天应用设置不变。
+
+设置后再次读回Chrome配置，完整对应且受本扩展控制才记BROWSER_RULE_CONFIGURED；失败撤销。该状态仅代表浏览器规则读回，不证明校园IP、机构授权、418消失或PDF下载。这个浏览器配置使用当前代理地址；启用期间保持原代理运行，关闭或更换代理前点“撤销Chrome的IEEE规则”。撤销只清除本扩展设置，由Chrome恢复下层最新配置；停用或卸载扩展也会清除其控制。范围包含正常Chrome窗口及继承它的无痕窗口。
+
+“检查Chrome代理”只报告模式、控制来源及规则核对，网址、节点、IP、密码和Cookie不写入诊断。本机诊断只在私有浏览器目录，不提交Git。不修改路由器、伪造校园IP或自动处理网站验证。若规则已读回仍418，保留网络/站点拒绝未知，停止登录循环。
+
+依据：[Chrome代理模式与例外](https://developer.chrome.com/docs/extensions/reference/api/proxy)、[设置优先级和撤销](https://developer.chrome.com/docs/extensions/reference/api/types)、[proxy不能作为可选权限](https://developer.chrome.com/docs/extensions/reference/api/permissions)。真实Chrome 0.4.5规则与IEEE下载仍需本人实测；12组代理与manifest检查不充当真实验收。
 
 ## MCP接入与调用
 

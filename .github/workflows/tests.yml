@@ -28,3 +28,5 @@ jobs:
         with:
           node-version: "20"
       - run: node tests/test_extension.cjs
+      - run: node tests/test_inspect.cjs
+      - run: node tests/test_chrome_ieee.cjs

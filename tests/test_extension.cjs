@@ -2,13 +2,13 @@
 const fs=require("node:fs"),vm=require("node:vm"),assert=require("node:assert/strict");
 const path=require("node:path");
 const storage={activeSessionId:"a".repeat(32),token:"fixture-token",managed:{7:{session_id:"a".repeat(32),index:0,doi:"10.1000/test",attempted:""}},downloads:{}};
-let nativeRequired=false,taskPaper={};const calls=[];let tabUrl="https://www.sciencedirect.com/article/test",clicked=false,controlClicks=0;
+let nativeRequired=false,taskPaper={},networkRoute={policy_enabled:true,direct_rule_present:true,status:'DIRECT_RULE_CONFIGURED'};const calls=[];let tabUrl="https://www.sciencedirect.com/article/test",clicked=false,controlClicks=0;
 let snapshot={doi:"10.1000/test",pdf_links:["https://www.sciencedirect.com/a.pdf"],auth_links:[],institution_recognized:true,no_access:false,challenge:false,password_form:false};
 const chrome={storage:{local:{get:async()=>structuredClone(storage),set:async d=>Object.assign(storage,structuredClone(d)),remove:async k=>{delete storage[k];}}},action:{setBadgeText:async data=>calls.push({badge:data})},
- tabs:{get:async()=>({url:tabUrl}),update:async(id,options)=>{calls.push({navigate:options});return {id};},query:async()=>[{id:7}],create:async()=>({id:8}),onUpdated:{addListener:()=>{}}},
+ tabs:{get:async()=>({url:tabUrl}),update:async(id,options)=>{calls.push({navigate:options});return {id};},query:async()=>[{id:7}],create:async options=>{calls.push({created:options});return {id:8};},onUpdated:{addListener:()=>{}}},
  downloads:{download:async options=>{calls.push({download:options});return 12;},search:async()=>[{state:"in_progress"}],onDeterminingFilename:{addListener:()=>{}},onChanged:{addListener:()=>{}}},
- scripting:{executeScript:async options=>options.func?[{result:options.func(...options.args)}]:[{result:structuredClone(snapshot)}]},runtime:{getManifest:()=>({version:"0.4.3"}),onMessage:{addListener:()=>{}}}};
-const sandbox={chrome,URL,console,document:{querySelector:()=>({content:snapshot.doi}),querySelectorAll:()=>clicked?[{innerText:"View PDF",getClientRects:()=>[{}],getAttribute:()=>"",click:()=>{controlClicks++;}}]:[]},getComputedStyle:()=>({visibility:"visible"}),setTimeout:()=>{},fetch:async(url,opts)=>{calls.push({url,opts});return {ok:true,json:async()=>({tasks:[{session_id:"a".repeat(32),papers:[{...taskPaper,native_save_required:nativeRequired}]}]})};}};
+ scripting:{executeScript:async options=>options.func?[{result:options.func(...options.args)}]:[{result:structuredClone(snapshot)}]},runtime:{getManifest:()=>({version:"0.4.5"}),onMessage:{addListener:()=>{}}}};
+const sandbox={importScripts:file=>vm.runInContext(fs.readFileSync(path.join(__dirname,"../browser-extension",file),"utf8"),sandbox),chrome,URL,console,document:{querySelector:()=>({content:snapshot.doi}),querySelectorAll:()=>clicked?[{innerText:"View PDF",getClientRects:()=>[{}],getAttribute:()=>"",click:()=>{controlClicks++;}}]:[]},getComputedStyle:()=>({visibility:"visible"}),setTimeout:()=>{},fetch:async(url,opts)=>{calls.push({url,opts});return {ok:true,json:async()=>String(url).endsWith("/ieee-network")?networkRoute:({tasks:[{session_id:"a".repeat(32),papers:[{...taskPaper,native_save_required:nativeRequired}]}]})};}};
 vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../browser-extension/background.js"),"utf8"),sandbox);
 (async()=>{
  assert.equal(vm.runInContext('allowed("https://www.sciencedirect.com/a.pdf")',sandbox),true);
@@ -73,5 +73,26 @@ vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,".
  assert.equal(ieeeNative.doi,ieeeDoi);
  assert.equal(await vm.runInContext('nativeDownloadJob({url:"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?arnumber=9792261",referrer:"https://ieeexplore.ieee.org/document/9792260",filename:"wrong.pdf",mime:"application/pdf"})',sandbox),undefined);
 
- console.log(JSON.stringify({status:"PASS",checks:["trusted_pdf_host","download_filename_scope","no_duplicate_download","pdf_precedes_login_widget","ieee_preview_navigation","sd_preparation_navigation","native_download_referrer_scope","wrong_doi_rejected","challenge_pauses","no_access_falls_back","click_official_pdf_control","resolved_cdn_identity","signed_url_not_persisted","resolved_cdn_deduplication","readable_failure_and_clear","security_response_stops_direct_retry","native_viewer_save_scope","cached_pdf_active_identity","ieee_canonical_article_binding","ieee_wrong_record_rejected","ieee_conflicting_doi_rejected","ieee_wrong_pdf_rejected","ieee_native_download_article_scope"],scope:"mock Chrome API; real extension installation/authentication still required"}));
+ tabUrl=ieeePage;snapshot={...snapshot,ieee_network_error:true,challenge:true,no_access:true};
+ const downloadCount=calls.filter(c=>c.download).length,navigationCount=calls.filter(c=>c.navigate).length;
+ await vm.runInContext('checkTab(7,true)',sandbox);
+ assert.equal(calls.filter(c=>c.download).length,downloadCount);
+ assert.equal(calls.filter(c=>c.navigate).length,navigationCount);
+ assert(calls.some(c=>c.opts?.body&&JSON.parse(c.opts.body).status==="NEED_IEEE_NETWORK_ROUTE"&&JSON.parse(c.opts.body).failure_code==="IEEE_HTTP_418"));
+ tabUrl="https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9792260";
+ storage.managed[7].viewer_url=tabUrl;
+ snapshot={doi:"",pdf_links:[],viewer_pdf_links:[],auth_links:[],institution_recognized:false,no_access:false,password_form:false,challenge:false,ieee_network_error:false};
+ await vm.runInContext('checkTab(7,true)',sandbox);
+ assert.equal(storage.managed[7].native_until>Date.now()+500000,true);
+ assert(calls.some(c=>c.opts?.body&&JSON.parse(c.opts.body).status==="NEED_BROWSER_SAVE"&&JSON.parse(c.opts.body).identity_source==="VERIFIED_PDF_VIEWER"));
+
+ networkRoute={policy_enabled:true,direct_rule_present:false,status:"NEED_IEEE_DIRECT_RULE"};
+ const openedBefore=calls.filter(c=>c.created).length;
+ const routePaused=await vm.runInContext('openNext("a".repeat(32))',sandbox);
+ assert.match(routePaused.status,/IEEE直连规则/);assert.equal(calls.filter(c=>c.created).length,openedBefore);
+ networkRoute={policy_enabled:true,direct_rule_present:true,status:"DIRECT_RULE_CONFIGURED"};
+ await vm.runInContext('openNext("a".repeat(32))',sandbox);
+ assert.equal(calls.filter(c=>c.created).length,openedBefore+1);assert.equal(calls.filter(c=>c.created).at(-1).created.url,ieeePage);
+
+ console.log(JSON.stringify({status:"PASS",checks:["trusted_pdf_host","download_filename_scope","no_duplicate_download","pdf_precedes_login_widget","ieee_preview_navigation","sd_preparation_navigation","native_download_referrer_scope","wrong_doi_rejected","challenge_pauses","no_access_falls_back","click_official_pdf_control","resolved_cdn_identity","signed_url_not_persisted","resolved_cdn_deduplication","readable_failure_and_clear","security_response_stops_direct_retry","native_viewer_save_scope","cached_pdf_active_identity","ieee_canonical_article_binding","ieee_wrong_record_rejected","ieee_conflicting_doi_rejected","ieee_wrong_pdf_rejected","ieee_native_download_article_scope","ieee_418_pauses_as_network","ieee_viewer_native_save_prompt","ieee_missing_direct_rule_pauses_open","ieee_ready_direct_rule_continues"],scope:"mock Chrome API; real extension installation/authentication still required"}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -121,6 +121,65 @@ class NormalBrowserTests(unittest.TestCase):
                                      "identity_matched": False, "identity_source": "https://example.invalid/?private=value"})
         self.assertNotIn("identity_source", result["papers"][0]["browser_evidence"])
 
+    def test_ieee_network_error_is_pending_not_no_subscription(self):
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "status": "NEED_IEEE_NETWORK_ROUTE",
+                                     "identity_matched": False, "failure_code": "IEEE_HTTP_418"})
+        self.assertEqual(result["status"], "NEED_IEEE_NETWORK_ROUTE")
+        self.assertEqual(result["actual_pdf_count"], 0)
+        self.assertEqual(result["papers"][0]["browser_evidence"]["failure_code"], "IEEE_HTTP_418")
+        self.assertEqual(len(self.bridge.tasks()), 1)
+
+    def test_network_settings_endpoint_requires_capability_and_explicit_action(self):
+        class Network:
+            def __init__(self): self.actions = []
+            def status(self): return {"status": "NEED_IEEE_DIRECT_RULE"}
+            def enable(self): self.actions.append("enable"); return {"status": "DIRECT_RULE_CONFIGURED"}
+            def restore(self): self.actions.append("restore"); return {"status": "RESTORED"}
+        network = Network()
+        self.bridge.network = network
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.bridge, "fixture-token"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = "http://127.0.0.1:" + str(server.server_port) + "/ieee-network"
+        try:
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(Request(url, data=b'{"action":"enable"}'))
+            self.assertEqual(caught.exception.code, 401)
+            self.assertEqual(network.actions, [])
+            headers = {"Authorization": "Bearer fixture-token", "Content-Type": "application/json"}
+            with self.assertRaises(HTTPError):
+                urlopen(Request(url, data=b'{"action":"global-proxy"}', headers=headers))
+            self.assertEqual(network.actions, [])
+            with urlopen(Request(url, data=b'{"action":"enable"}', headers=headers)) as response:
+                self.assertEqual(json.load(response)["status"], "DIRECT_RULE_CONFIGURED")
+            self.assertEqual(network.actions, ["enable"])
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_browser_network_template_and_report_require_capability(self):
+        class Network:
+            def __init__(self): self.reports = []
+            def browser_template(self): return {"status": "MANUAL_LOOPBACK_PROXY_TEMPLATE"}
+            def record_browser(self, data): self.reports.append(data); return {"status": "BROWSER_RULE_CONFIGURED"}
+        network = Network()
+        self.bridge.network = network
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.bridge, "fixture-token"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        url = "http://127.0.0.1:" + str(server.server_port)
+        try:
+            for endpoint in ("/ieee-network-template", "/ieee-browser-diagnostic"):
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(Request(url + endpoint, data=b"{}" if endpoint.endswith("diagnostic") else None))
+                self.assertEqual(caught.exception.code, 401)
+            self.assertEqual(network.reports, [])
+            headers = {"Authorization": "Bearer fixture-token", "Content-Type": "application/json"}
+            with urlopen(Request(url + "/ieee-network-template", headers=headers)) as response:
+                self.assertEqual(json.load(response)["status"], "MANUAL_LOOPBACK_PROXY_TEMPLATE")
+            with urlopen(Request(url + "/ieee-browser-diagnostic", data=b'{"status":"BROWSER_RULE_CONFIGURED"}', headers=headers)) as response:
+                self.assertEqual(json.load(response)["status"], "BROWSER_RULE_CONFIGURED")
+            self.assertEqual(len(network.reports), 1)
+        finally:
+            server.shutdown(); server.server_close()
+
     def test_wheel_extension_directory(self):
         root=Path(self.temp.name)
         installed=root/'prefix'/'share'/'papers-capture'/'browser-extension'
