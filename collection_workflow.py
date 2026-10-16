@@ -163,7 +163,12 @@ class CollectionManager:
             elif action == "skip":
                 state["papers"][state["current_index"]]["status"] = "SKIPPED_BY_USER"
             else:
-                state["note"] = "请在正常浏览器扩展点击‘我已登录，检查当前论文’，以接续当前可见页面"
+                # 恢复服务先于任务写入；启动失败时保留原断点和逐篇状态。
+                from normal_browser import ensure_bridge
+                ensure_bridge(self)
+                result = self.status(sid)
+                result["note"] = "本机接续服务已就绪；请在正常浏览器扩展点击‘我已登录，检查当前论文’，以接续当前可见页面"
+                return result
             self.save(state)
             return self.status(sid)
         atomic_json(self.directory(sid) / "command.json", {"action": action, "id": uuid.uuid4().hex})

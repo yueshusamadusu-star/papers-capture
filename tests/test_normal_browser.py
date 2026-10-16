@@ -61,6 +61,58 @@ class NormalBrowserTests(unittest.TestCase):
         with self.assertRaises(HelperError):self.bridge.update({'session_id':self.sid,'index':0,'status':'SKIPPED_NO_ACCESS','identity_matched':True})
         result=self.bridge.update({'session_id':self.sid,'index':0,'status':'SKIPPED_NO_ACCESS','identity_matched':True,'institution_recognized':True})
         self.assertEqual(result['actual_pdf_count'],0);self.assertEqual(result['status'],'FINISHED')
+    def test_resume_restores_service_and_preserves_saved_paper_and_current_index(self):
+        first = dict(self.state["papers"][0])
+        first["status"] = "SAVED"
+        first["file"] = {"sha256": "a" * 64, "bytes": 1024}
+        pending = dict(self.state["papers"][0])
+        pending["doi"] = pending["identifier"] = "10.1000/b"
+        pending["status"] = "ACCESS_UNKNOWN"
+        pending["browser_evidence"] = {"identity_matched": False}
+        self.state.update(status="ACCESS_UNKNOWN", current_index=1, papers=[first, pending])
+        self.manager.save(self.state)
+        with patch("normal_browser.ensure_bridge", return_value={"token": "private-fixture", "pid": 123}) as ensure:
+            result = self.manager.action(self.sid, "resume")
+        ensure.assert_called_once_with(self.manager)
+        self.assertEqual(result["current_index"], 1)
+        self.assertEqual(result["papers"], [first, pending])
+        self.assertEqual(result["actual_pdf_count"], 1)
+        self.assertNotIn("private-fixture", json.dumps(result))
+        self.assertFalse((self.manager.directory(self.sid) / "command.json").exists())
+
+    def test_resume_does_not_overwrite_progress_arriving_during_service_start(self):
+        self.state.update(status="ACCESS_UNKNOWN", current_index=0)
+        self.manager.save(self.state)
+        def finish_while_service_starts(manager):
+            current = manager.load(self.sid)
+            current["status"] = "FINISHED"
+            current["papers"][0]["status"] = "SKIPPED_BY_USER"
+            manager.save(current)
+            return {"pid": 123}
+        with patch("normal_browser.ensure_bridge", side_effect=finish_while_service_starts):
+            result = self.manager.action(self.sid, "resume")
+        self.assertEqual(result["status"], "FINISHED")
+        self.assertEqual(result["papers"][0]["status"], "SKIPPED_BY_USER")
+        self.assertEqual(self.manager.load(self.sid)["status"], "FINISHED")
+
+    def test_resume_service_failure_leaves_checkpoint_bytes_unchanged(self):
+        self.state.update(status="ACCESS_UNKNOWN", current_index=0)
+        self.manager.save(self.state)
+        checkpoint = self.manager.directory(self.sid) / "state.json"
+        before = checkpoint.read_bytes()
+        with patch("normal_browser.ensure_bridge", side_effect=HelperError("port unavailable")):
+            with self.assertRaises(HelperError):
+                self.manager.action(self.sid, "resume")
+        self.assertEqual(checkpoint.read_bytes(), before)
+
+    def test_closed_task_resume_does_not_start_service(self):
+        self.state["status"] = "CLOSED"
+        self.manager.save(self.state)
+        with patch("normal_browser.ensure_bridge") as ensure:
+            result = self.manager.action(self.sid, "resume")
+        ensure.assert_not_called()
+        self.assertEqual(result["status"], "CLOSED")
+
     def test_wheel_extension_directory(self):
         root=Path(self.temp.name)
         installed=root/'prefix'/'share'/'papers-capture'/'browser-extension'
