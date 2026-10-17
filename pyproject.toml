@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "papers-capture"
-version = "0.4.5"
+version = "0.4.6"
 description = "公开文献检索、开放全文下载与浙大人工访问指引"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -23,11 +23,13 @@ Repository = "https://github.com/yueshusamadusu-star/papers-capture"
 papers-capture = "literature_helper:main"
 papers-capture-mcp = "mcp_server:main"
 papers-collect = "collection_workflow:main"
+papers-capture-service = "service_launcher:main"
 zju-literature = "literature_helper:main"
 zju-literature-mcp = "mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["literature_helper", "mcp_server", "collection_workflow", "browser_worker", "normal_browser", "ieee_network"]
+py-modules = ["literature_helper", "mcp_server", "collection_workflow", "browser_worker", "normal_browser", "ieee_network", "service_launcher"]
 
 [tool.setuptools.data-files]
+"share/papers-capture" = ["启动文献服务.cmd"]
 "share/papers-capture/browser-extension" = ["browser-extension/*"]

@@ -1,6 +1,6 @@
 # papers-capture：提示词到文献全文
 
-0.4.5，2026-10-17。非浙大官方项目。代码MIT；文献按各自许可使用。
+0.4.6，2026-10-17。服务启动入口更新；浏览器扩展仍为0.4.5。非浙大官方项目。代码MIT；文献按各自许可使用。
 
 ## 在agent中使用
 
@@ -39,6 +39,20 @@ Windows默认使用已安装Edge；其他环境可安装Playwright Chromium，�
 ScienceDirect优先点击官网View PDF，跳转到精确的pdf.sciencedirectassets.com文件域后按原论文PII核对，再下载新生成的临时链接；不对Chrome内置PDF阅读器注入页面脚本。下载准备页和IEEE预览页先在浏览器中打开，只有随后取得并校验的PDF计入全文；htm/html不算成功。扩展感叹号表示最近有失败，打开弹窗可看具体原因；完整PDF成功归档后清除。扩展只处理所选任务的论文标签；不申请Cookie读取、密码、调试器或学校认证网站读取权限。[浏览器下载API](https://developer.chrome.com/docs/extensions/reference/api/downloads#method-download)在浏览器内部使用当前会话，不将Cookie交给Python或agent。服务仅监听127.0.0.1:8766；配对能力凭据只在本机私有目录与扩展存储，不入Git。
 
 若扩展下载请求返回Security verification网页，任务进入 `NEED_BROWSER_SAVE` 并停止自动重试。此时需本人在已能显示完整论文的PDF阅读器点一次下载，扩展按同篇PII接住原生文件或当前篇缓存保存，再自动校验归档；这条路径需要人工保存，不能称全自动。
+
+### 自己启动本机服务（Windows）
+
+在源码目录双击 **启动文献服务.cmd**。已运行时复用当前服务，未运行时在后台启动；就绪后请求默认浏览器打开本机连接页。关闭启动窗口不停止后台服务，不需每次让agent启动。重启电脑或服务进程退出后再运行即可；没有设置开机自启。
+
+启动器使用本目录已有.venv，不下载或重装依赖；缺环境或端口/配置不匹配时保留任务并显示提示。默认浏览器若不是装有扩展的Chrome，回Chrome使用扩展即可；打开127.0.0.1:8766/pair网页本身不会启动后台。
+
+文献库优先级为命令行--output、LIT_OUTPUT_DIR环境变量、本机私有.local-browser目录的service-launcher.json中output_dir、默认downloads；配对目录可由LIT_BROWSER_DIR指定。个人路径和配对目录不入Git。本机启动配置例如：
+
+    {"output_dir":"D:/文献库"}
+
+安装后也可使用papers-capture-service --open；源码方式为python service_launcher.py --open。已有服务必须匹配文献库和配对目录指纹，未知或不匹配不强制关闭它。升级前的服务没有指纹时需先核对进程再更新；当前作者本机已经更新完成。
+
+0.4.6未修改扩展，不需为启动入口刷新扩展；此前IEEE 0.4.5验证仍单独待本人完成。服务就绪不证明IEEE网络、学校订阅或PDF下载成功。
 
 ### 中断后继续
 

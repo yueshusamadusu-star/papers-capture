@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from literature_helper import LiteratureHelper,HelperError
 from collection_workflow import CollectionManager
-from normal_browser import RegularBridge,handler_for,extension_directory
+from normal_browser import RegularBridge,handler_for,extension_directory,ensure_bridge
 
 
 class NormalBrowserTests(unittest.TestCase):
@@ -177,6 +177,37 @@ class NormalBrowserTests(unittest.TestCase):
             with urlopen(Request(url + "/ieee-browser-diagnostic", data=b'{"status":"BROWSER_RULE_CONFIGURED"}', headers=headers)) as response:
                 self.assertEqual(json.load(response)["status"], "BROWSER_RULE_CONFIGURED")
             self.assertEqual(len(network.reports), 1)
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_service_health_stays_loopback_and_reuses_existing_service(self):
+        import os
+        self.manager.browser_dir = Path(self.temp.name) / "private"
+        self.manager.browser_dir.mkdir()
+        (self.manager.browser_dir / "bridge.json").write_text(json.dumps({"token": "fixture-token", "pid": 321}), encoding="utf-8")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.bridge, "fixture-token"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        origin = "http://127.0.0.1:" + str(server.server_port)
+        try:
+            with patch("normal_browser.ORIGIN", origin), patch("normal_browser.subprocess.Popen") as spawn, patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1", "NO_PROXY": "", "no_proxy": ""}):
+                self.assertEqual(ensure_bridge(self.manager)["pid"], os.getpid())
+                self.assertEqual(ensure_bridge(self.manager)["pid"], os.getpid())
+            spawn.assert_not_called()
+        finally:
+            server.shutdown(); server.server_close()
+
+    def test_service_with_other_library_is_not_reused_or_replaced(self):
+        self.manager.browser_dir = Path(self.temp.name) / "private"
+        self.manager.browser_dir.mkdir()
+        (self.manager.browser_dir / "bridge.json").write_text(json.dumps({"token": "fixture-token"}), encoding="utf-8")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self.bridge, "fixture-token"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        other = CollectionManager(LiteratureHelper(Path(self.temp.name) / "other-library"), self.manager.browser_dir)
+        try:
+            with patch("normal_browser.ORIGIN", "http://127.0.0.1:" + str(server.server_port)), patch("normal_browser.subprocess.Popen") as spawn:
+                with self.assertRaises(HelperError):
+                    ensure_bridge(other)
+            spawn.assert_not_called()
         finally:
             server.shutdown(); server.server_close()
 

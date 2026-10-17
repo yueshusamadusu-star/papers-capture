@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
 import webbrowser
 
 from literature_helper import LiteratureHelper, HelperError, MAX_PDF, PdfResponseError
@@ -131,6 +132,11 @@ class RegularBridge:
             return self.manager.status(state['session_id'])
 
 
+def bridge_binding(manager):
+    return {key: hashlib.sha256(os.path.normcase(str(path.resolve())).encode("utf-8")).hexdigest()
+            for key, path in (("library_id", manager.helper.output), ("browser_id", manager.browser_dir))}
+
+
 def handler_for(bridge, token):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args): pass
@@ -146,7 +152,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.5'}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.6','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
@@ -181,9 +187,16 @@ def ensure_bridge(manager):
         try:
             data=json.loads(config.read_text(encoding='utf-8'))
             request=Request(ORIGIN+'/health',headers={'Authorization':'Bearer '+data['token']})
-            with urlopen(request,timeout=1) as response:
-                if json.load(response).get('service')=='papers-capture': return data
-        except (OSError,ValueError,KeyError): pass
+            # 本机能力接口只走环回，不把配对令牌交给环境或系统代理。
+            with build_opener(ProxyHandler({})).open(request,timeout=1) as response:
+                health = json.load(response)
+        except (OSError,ValueError,KeyError):
+            return None
+        if health.get("service") == "papers-capture":
+            if any(health.get(k) != v for k, v in bridge_binding(manager).items()):
+                raise HelperError("8766服务的文献库/配对目录尚未匹配；未启动第二份服务，请先核对既有进程或版本")
+            # 启动时bridge.json可能刚好在替换；进程编号以已认证的健康响应为准。
+            return {**data, "pid": health.get("pid", data.get("pid"))}
         return None
     data=live()
     if data: return data
