@@ -198,7 +198,7 @@ class RegularBridge:
                     paper['browser_evidence']['extension_version']=data['extension_version']
                 if data.get('identity_source') in {'PAGE_DOI','IEEE_ARTICLE_URL','VERIFIED_PDF_VIEWER'}:
                     paper['browser_evidence']['identity_source']=data['identity_source']
-                reasons={'NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载','IEEE_HTTP_418':'IEEE返回418，先核对校园网直连路线，未判无订阅','IEEE_NETWORK_ERROR':'IEEE网络访问失败，先核对直连路线，未判无订阅'}
+                reasons={'FETCH_PDF':'没有取得完整PDF，可能需本人认证或网站验证；未保存网页','SAVE_DIRECTORY':'保存目录或文件校验失败，未计入全文','NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载','IEEE_HTTP_418':'IEEE返回418，先核对校园网直连路线，未判无订阅','IEEE_NETWORK_ERROR':'IEEE网络访问失败，先核对直连路线，未判无订阅'}
                 if data.get('failure_code') in reasons:
                     paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
                 elif observed=='DOWNLOADING':paper.pop('reason',None)
@@ -235,7 +235,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.1','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.2','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':

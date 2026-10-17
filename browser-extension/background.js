@@ -17,13 +17,20 @@ const ieeeArticleId=value=>{try{
  return id&&u.searchParams.getAll("arnumber").every(n=>/^[0-9]+$/.test(n)&&n.replace(/^0+(?=[0-9])/,"")===id)?id:"";
 }catch{return "";}};
 const ieeeArticlePage=value=>{try{return /^\/(?:abstract\/)?document\/[0-9]+\/?$/.test(new URL(value).pathname)&&Boolean(ieeeArticleId(value));}catch{return false;}};
+const aipRecordKey=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="pubs.aip.org"||u.username||u.password)return "";return u.pathname.match(/^\/aip\/([a-z0-9]+)\/article(?:-abstract|-pdf)?\/([0-9]+)\/([0-9]+)\/([a-z0-9]+)\//i)?.slice(1).join("/").toLowerCase()||"";}catch{return "";}};
+function aipFileIdentity(job,value){try{
+ const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="pubs.aip.org"||u.username||u.password||!/^10\.1063\//i.test(job.doi||""))return false;
+ const fromDoi=u.pathname.match(/^\/aip\/[a-z0-9]+\/article-pdf\/doi\/(.+)\/[0-9]+\/[^/]+\.pdf$/i)?.[1];
+ if(fromDoi)return doi(decodeURIComponent(fromDoi))===doi(job.doi);
+ return /^\/aip\/[a-z0-9]+\/article-pdf\/[0-9]+\/[0-9]+\/[a-z0-9]+\/[0-9]+\/[^/]+\.pdf$/i.test(u.pathname)&&Boolean(aipRecordKey(job.article_page)&&aipRecordKey(u.href)===aipRecordKey(job.article_page));
+}catch{return false;}}
 const checking=new Set(),completing=new Set(),opening=new Set(),transfers=new Set();
 const failureMessages={FETCH_PDF:"未取得完整PDF，已停止；请返回原论文页检查访问权限",SAVE_DIRECTORY:"PDF未保存，请检查插件中的保存目录",DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
 async function reportFailure(code,job){
  const key=code in failureMessages?code:"BROWSER_OPERATION";
  await chrome.storage.local.set({lastFailure:{code:key,summary:failureMessages[key],when:new Date().toISOString()}});
  await chrome.action.setBadgeText({text:"!"});
- if(job)try{await progress(job,key==="DOWNLOAD_SECURITY"?"NEED_BROWSER_SAVE":"DOWNLOAD_ERROR",true,{failure_code:key});}catch{}
+ if(job)try{await progress(job,key==="DOWNLOAD_SECURITY"?"NEED_BROWSER_SAVE":key==="FETCH_PDF"?"ACCESS_UNKNOWN":"DOWNLOAD_ERROR",true,{failure_code:key});}catch{}
 }
 async function clearFailure(){await chrome.storage.local.remove("lastFailure");await chrome.action.setBadgeText({text:""});}
 
@@ -70,12 +77,13 @@ async function clickArticlePdf(tabId,expected){
  }});return results[0]?.result?.clicked===true;
 }
 async function startDownload(tabId,job,url,snapshot={},force=false){
- const key=job.session_id+":"+job.index,asset=assetPii(url),ieee=ieeeArticleId(url),signature=asset?"resolved:"+asset:ieee?"ieee-file:"+ieee:url;
+ const key=job.session_id+":"+job.index,asset=assetPii(url),ieee=ieeeArticleId(url),signature=asset?"resolved:"+asset:ieee?"ieee-file:"+ieee:aipFileIdentity(job,url)?"aip-file:"+doi(job.doi):url;
  if(asset&&asset!==(job.expected_pii||articlePii(job.article_page)))return {status:"最终PDF与原论文身份不一致，未下载"};
  if(transfers.has(key)||(!force&&job.attempted===signature))return {status:"等待下载结果"};
  transfers.add(key);
  try{
   const direct=fileResponseIdentity(job,url);
+  if(new URL(url).hostname==="pubs.aip.org"&&!direct){await progress(job,"ACCESS_UNKNOWN",true,snapshot);return {status:"AIP文件身份尚未核对，未下载网页；请查看官网PDF或浙大数据库访问说明"};}
   job.attempted=signature;job.transfer_method=direct?"EXTENSION_FETCH":"EXTENSION_REQUEST";job.download_trigger=snapshot.download_trigger||"DOCUMENT_LINK";const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
   await progress(job,"DOWNLOADING",true,{...snapshot,download_method:job.transfer_method,download_trigger:job.download_trigger});
   if(direct)return await savePdfDirect(tabId,job,url);
@@ -136,6 +144,12 @@ async function checkTab(tabId,force=false){
   const matched=doiMatched||recordMatched,viewer=Boolean(job.identity_verified&&job.viewer_url===tab.url);
   if(matched||viewer){job.identity_source=doiMatched?"PAGE_DOI":recordMatched?"IEEE_ARTICLE_URL":"VERIFIED_PDF_VIEWER";s.identity_source=job.identity_source;}
   if(!matched&&!viewer){await progress(job,s.password_form?"NEED_USER_AUTHENTICATION":"ACCESS_UNKNOWN",false,s);return {status:"请返回本篇论文页后再次检查"};}
+  // AIP摘要页也可能声明citation_pdf_url；购买页上的元标签不能证明已拿到全文。
+  if(matched&&aipRecordKey(tab.url)&&s.pdf_controls===0&&(s.no_access||s.password_form)){
+   job.identity_verified=true;job.article_page=safePage(tab.url);managed[tabId]=job;await chrome.storage.local.set({managed});
+   if(s.institution_recognized&&s.no_access){await progress(job,"SKIPPED_NO_ACCESS",true,s);await openNext(job.session_id);return {status:"本篇无权限，已退避"};}
+   await progress(job,"NEED_USER_AUTHENTICATION",true,s);return {status:"AIP当前是摘要/购买页，未取得PDF；请点浙大数据库访问说明完成可用访问路线，再回本篇检查"};
+  }
   // 已匹配论文的PDF候选优先于旁边的个人登录组件；隐藏表单不算认证页面。
   const pdf=(matched?s.pdf_links:(s.viewer_pdf_links||[])).find(u=>(allowed(u)||assetPii(u))&&(!job.ieee_article_id||ieeeArticleId(u)===job.ieee_article_id));
   if(matched&&articlePii(tab.url)){
@@ -253,6 +267,11 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
    await api("/ieee-network",{action:"restore"});return {status:"已撤销本工具添加的IEEE例外，保留其他代理设置"};
   }
   if(message.action==="start")return openNext(message.session_id);
+  if(message.action==="library-access"){
+   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});const {managed={}}=await chrome.storage.local.get("managed");
+   const url=/^10\.1063\//i.test(managed[tab?.id]?.doi||"")?"https://libdb.zju.edu.cn/s/lib/libtb/show/490":"https://libdb.zju.edu.cn/";
+   await chrome.tabs.create({url});return {status:"已打开浙大数据库访问说明；数据库订购信息不代替本篇权限核验"};
+  }
   if(message.action==="auth"){await chrome.tabs.create({url:"https://ds.carsi.edu.cn/"});return {status:"请在CARSI选择浙江大学，并选择IEEE或Elsevier SD"};}
   if(message.action==="check"){
    await reconcileDownloads();

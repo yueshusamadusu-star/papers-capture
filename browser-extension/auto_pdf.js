@@ -4,6 +4,7 @@ const capturedPdfResponses=new Map(),autoPdfStarting=new Set();
 const transferKey=job=>job.session_id+":"+job.index;
 function fileResponseIdentity(job,url){
  if(job.ieee_article_id)return ieeeArticleId(url)===job.ieee_article_id;
+ if(aipFileIdentity(job,url))return true;
  const expected=job.expected_pii||articlePii(job.article_page);
  return Boolean(expected&&assetPii(url)===expected);
 }
@@ -53,7 +54,7 @@ async function retryKnownIeeeFile(tabId,job){
 }
 if(chrome.webRequest?.onHeadersReceived){
  chrome.webRequest.onHeadersReceived.addListener(details=>{observePdfResponse(details).catch(()=>reportFailure("BROWSER_OPERATION"));},
-  {urls:["https://ieeexplore.ieee.org/*","https://pdf.sciencedirectassets.com/*"]},["responseHeaders"]);
+  {urls:["https://ieeexplore.ieee.org/*","https://pdf.sciencedirectassets.com/*","https://pubs.aip.org/*"]},["responseHeaders"]);
 }
 
 async function stopAutomaticTransfer(job){

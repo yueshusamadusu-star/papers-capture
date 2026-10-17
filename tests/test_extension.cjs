@@ -52,6 +52,13 @@ vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,".
  assert.equal(vm.runInContext('assetPii("https://pdf.sciencedirectassets.com.evil.example/a/1-s2.0-S0263224124013708/main.pdf")',sandbox),"");
  await vm.runInContext('reportFailure("NOT_PDF")',sandbox);assert.equal(storage.lastFailure.code,"NOT_PDF");assert.equal(calls.at(-1).badge.text,"!");
  await vm.runInContext('clearFailure()',sandbox);assert.equal(storage.lastFailure,undefined);assert.equal(calls.at(-1).badge.text,"");
+ // AIP摘要/购买页即使声明PDF元标签，也不能发起下载或保存HTM。
+ tabUrl='https://pubs.aip.org/aip/rsi/article-abstract/82/4/046109/353538/title';
+ storage.managed[7]={session_id:'a'.repeat(32),index:0,doi:'10.1063/1.3581223',attempted:''};
+ snapshot={doi:'10.1063/1.3581223',pdf_links:['https://pubs.aip.org/aip/rsi/article-pdf/82/4/046109/353538/file.pdf'],pdf_controls:0,no_access:true,password_form:true,auth_links:[],institution_recognized:false};
+ const beforeAipDownloads=calls.filter(c=>c.download).length;await vm.runInContext('checkTab(7,true)',sandbox);
+ assert.equal(calls.filter(c=>c.download).length,beforeAipDownloads);assert(calls.some(c=>c.opts?.body&&JSON.parse(c.opts.body).status==='NEED_USER_AUTHENTICATION'));
+ snapshot={...snapshot,no_access:false,password_form:false};
  const ieeeDoi="10.1109/access.2022.3181725",ieeePage="https://ieeexplore.ieee.org/document/9792260";
  assert.equal(vm.runInContext('doi("DOI: 10.1109/ACCESS.2022.3181725")',sandbox),ieeeDoi);
  assert.equal(vm.runInContext('ieeeArticleId("https://ieeexplore.ieee.org/document/9792260/")',sandbox),"9792260");
@@ -97,5 +104,5 @@ vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,".
  await vm.runInContext('openNext("a".repeat(32))',sandbox);
  assert.equal(calls.filter(c=>c.created).length,openedBefore+1);assert.equal(calls.filter(c=>c.created).at(-1).created.url,ieeePage);
 
- console.log(JSON.stringify({status:"PASS",checks:["trusted_pdf_host","download_filename_scope","no_duplicate_download","pdf_precedes_login_widget","ieee_preview_navigation","sd_preparation_navigation","native_download_referrer_scope","wrong_doi_rejected","challenge_pauses","no_access_falls_back","click_official_pdf_control","resolved_cdn_identity","signed_url_not_persisted","resolved_cdn_deduplication","readable_failure_and_clear","security_response_stops_direct_retry","native_viewer_save_scope","cached_pdf_active_identity","ieee_canonical_article_binding","ieee_wrong_record_rejected","ieee_conflicting_doi_rejected","ieee_wrong_pdf_rejected","ieee_native_download_article_scope","ieee_418_pauses_as_network","ieee_viewer_native_save_prompt","ieee_missing_direct_rule_pauses_open","ieee_ready_direct_rule_continues"],scope:"mock Chrome API; real extension installation/authentication still required"}));
+ console.log(JSON.stringify({status:"PASS",checks:["trusted_pdf_host","download_filename_scope","no_duplicate_download","pdf_precedes_login_widget","ieee_preview_navigation","sd_preparation_navigation","native_download_referrer_scope","wrong_doi_rejected","challenge_pauses","no_access_falls_back","click_official_pdf_control","resolved_cdn_identity","signed_url_not_persisted","resolved_cdn_deduplication","readable_failure_and_clear","security_response_stops_direct_retry","native_viewer_save_scope","cached_pdf_active_identity","ieee_canonical_article_binding","ieee_wrong_record_rejected","ieee_conflicting_doi_rejected","ieee_wrong_pdf_rejected","ieee_native_download_article_scope","ieee_418_pauses_as_network","ieee_viewer_native_save_prompt","ieee_missing_direct_rule_pauses_open","ieee_ready_direct_rule_continues","aip_abstract_pdf_metadata_does_not_download_html"],scope:"mock Chrome API; real extension installation/authentication still required"}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

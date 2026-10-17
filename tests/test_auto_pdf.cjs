@@ -33,7 +33,7 @@ function fixture(){
 (async()=>{
  let count=0;
  {
-  const f=fixture();assert.deepEqual(Array.from(f.callbacks.network.filter.urls),['https://ieeexplore.ieee.org/*','https://pdf.sciencedirectassets.com/*']);assert.deepEqual(Array.from(f.callbacks.network.extra),['responseHeaders']);count++;
+  const f=fixture();assert.deepEqual(Array.from(f.callbacks.network.filter.urls),['https://ieeexplore.ieee.org/*','https://pdf.sciencedirectassets.com/*','https://pubs.aip.org/*']);assert.deepEqual(Array.from(f.callbacks.network.extra),['responseHeaders']);count++;
  }
  {
   const f=fixture();await f.invoke('observePdfResponse',f.details());await f.invoke('observePdfResponse',{...f.details(),statusCode:206});
@@ -98,6 +98,22 @@ function fixture(){
   const f=fixture();vm.runInContext('DIRECT_PDF_LIMIT',f.sandbox);
   const response={status:200,headers:{get:key=>key==='content-type'?'application/pdf':String(26*1024*1024)}};
   await assert.rejects(f.invoke('pdfResponseBytes',response));count++;
+ }
+ {
+  const f=fixture();f.storage.managed[7]={session_id:SID,index:0,doi:'10.1063/1.3581223',identity_verified:true,article_page:'https://pubs.aip.org/aip/rsi/article-abstract/82/4/046109/353538/title'};
+  const file='https://pubs.aip.org/aip/rsi/article-pdf/82/4/046109/353538/046109_1_online.pdf';
+  assert.equal(await f.invoke('aipFileIdentity',f.storage.managed[7],file),true);
+  assert.equal(await f.invoke('aipFileIdentity',f.storage.managed[7],file.replace('/046109/','/046110/')),false);
+  assert.equal(await f.invoke('aipFileIdentity',f.storage.managed[7],file.replace('pubs.aip.org','pubs.aip.org.evil.example')),false);
+  assert.equal(await f.invoke('aipFileIdentity',f.storage.managed[7],'https://pubs.aip.org/aip/rsi/article-pdf/doi/10.1063/1.3581223/353538/file.pdf'),true);
+  assert.equal(await f.invoke('aipFileIdentity',f.storage.managed[7],'https://pubs.aip.org/aip/rsi/article-pdf/doi/10.1063/1.3581224/353538/file.pdf'),false);
+  await f.invoke('observePdfResponse',f.details(file));assert.equal(f.state.complete,true);assert.equal(f.calls.some(x=>x.chromeDownload),false);count++;
+ }
+ {
+  const f=fixture(),job={session_id:SID,index:0,doi:'10.1063/1.3581223',identity_verified:true,article_page:'https://pubs.aip.org/aip/rsi/article-abstract/82/4/046109/353538/title'};
+  f.storage.managed[7]=job;f.state.mime='text/html';f.state.body=new TextEncoder().encode('<html>Sign in or buy this article</html>');
+  await f.invoke('startDownload',7,job,'https://pubs.aip.org/aip/rsi/article-pdf/82/4/046109/353538/046109_1_online.pdf');
+  assert.equal(f.state.complete,false);assert.equal(f.calls.some(x=>x.chromeDownload),false);assert.equal(f.storage.lastFailure.code,'FETCH_PDF');count++;
  }
  console.log(JSON.stringify({status:'PASS',checks:count,scope:'real extension functions with mocked Chrome/network; actual no-dialog download still pending'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});
