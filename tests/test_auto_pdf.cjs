@@ -33,7 +33,7 @@ function fixture(){
 (async()=>{
  let count=0;
  {
-  const f=fixture();assert.deepEqual(Array.from(f.callbacks.network.filter.urls),['https://ieeexplore.ieee.org/*','https://pdf.sciencedirectassets.com/*','https://pubs.aip.org/*']);assert.deepEqual(Array.from(f.callbacks.network.extra),['responseHeaders']);count++;
+  const f=fixture();assert.deepEqual(Array.from(f.callbacks.network.filter.urls),['https://ieeexplore.ieee.org/*','https://pdf.sciencedirectassets.com/*','https://pubs.aip.org/*','https://www.mdpi.com/*','https://mdpi.com/*','https://mdpi-res.com/*']);assert.deepEqual(Array.from(f.callbacks.network.extra),['responseHeaders']);count++;
  }
  {
   const f=fixture();await f.invoke('observePdfResponse',f.details());await f.invoke('observePdfResponse',{...f.details(),statusCode:206});

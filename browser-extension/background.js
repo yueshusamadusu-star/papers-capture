@@ -1,5 +1,5 @@
 "use strict";
-importScripts("chrome_ieee.js","direct_save.js","auto_pdf.js","resume_binding.js");
+importScripts("chrome_ieee.js","mdpi_pdf.js","direct_save.js","auto_pdf.js","resume_binding.js");
 const ORIGIN="http://127.0.0.1:8766";
 const domains=["sciencedirect.com","elsevier.com","ieee.org","scitepress.org","mdpi.com","mdpi-res.com","arxiv.org","ncbi.nlm.nih.gov","springer.com","springerlink.com","nature.com","wiley.com","tandfonline.com","acm.org","cambridge.org","oup.com","sagepub.com","iop.org","aps.org","aip.org"];
 const allowed=value=>{try{const u=new URL(value);return u.protocol==="https:"&&!u.username&&!u.password&&domains.some(d=>u.hostname===d||u.hostname.endsWith("."+d));}catch{return false;}};
@@ -86,12 +86,13 @@ async function clickArticlePdf(tabId,expected,pii=""){
  }});return results[0]?.result?.clicked===true;
 }
 async function startDownload(tabId,job,url,snapshot={},force=false){
- const key=job.session_id+":"+job.index,asset=assetPii(url),ieee=ieeeArticleId(url),signature=asset?"resolved:"+asset:ieee?"ieee-file:"+ieee:aipFileIdentity(job,url)?"aip-file:"+doi(job.doi):url;
+ const key=job.session_id+":"+job.index,asset=assetPii(url),ieee=ieeeArticleId(url),signature=asset?"resolved:"+asset:ieee?"ieee-file:"+ieee:aipFileIdentity(job,url)?"aip-file:"+doi(job.doi):mdpiFileIdentity(job,url)?"mdpi-file:"+doi(job.doi):url;
  if(asset&&asset!==(job.expected_pii||articlePii(job.article_page)))return {status:"最终PDF与原论文身份不一致，未下载"};
  if(transfers.has(key)||(!force&&job.attempted===signature))return {status:"等待下载结果"};
  transfers.add(key);
  try{
   const direct=fileResponseIdentity(job,url);
+  if(/^10\.3390\//i.test(job.doi||"")&&!direct){await progress(job,"ACCESS_UNKNOWN",true,snapshot);return {status:"MDPI文件与原论文尚未对应，已停止；不会保存网页或弹另存为"};}
   if(new URL(url).hostname==="pubs.aip.org"&&!direct){await progress(job,"ACCESS_UNKNOWN",true,snapshot);return {status:"AIP文件身份尚未核对，未下载网页；请查看官网PDF或浙大数据库访问说明"};}
   job.attempted=signature;job.transfer_method=direct?"EXTENSION_FETCH":"EXTENSION_REQUEST";job.download_trigger=snapshot.download_trigger||"DOCUMENT_LINK";const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
   await progress(job,"DOWNLOADING",true,{...snapshot,download_method:job.transfer_method,download_trigger:job.download_trigger});
@@ -103,6 +104,10 @@ async function startDownload(tabId,job,url,snapshot={},force=false){
  }finally{transfers.delete(key);}
 }
 async function adoptCurrent(tab,requestedSession=""){
+ if(mdpiPdfLocation(tab.url)){
+  if(await restoreMdpiFile(tab,requestedSession))return;
+  throw Error("当前MDPI PDF与所选任务尚未对应，请返回本篇论文页");
+ }
  if(assetPii(tab.url)||sdArticle(tab.url)){
   if(await restoreScienceDirect(tab,requestedSession))return;
   if(assetPii(tab.url)){
@@ -142,6 +147,8 @@ async function checkTab(tabId,force=false){
    const bound=ieeeArticleId(paper?.publisher_article_url||paper?.article_url);
    if(bound){job.ieee_article_id=bound;managed[tabId]=job;await chrome.storage.local.set({managed});}
   }
+  if(mdpiFileIdentity(job,tab.url))return beginObservedPdf(tabId,job,tab.url,"DOCUMENT_LINK");
+  if(mdpiPdfLocation(tab.url))return {status:"当前MDPI文件与原论文不一致，未下载"};
   if(assetPii(tab.url)){
    const expected=job.expected_pii||articlePii(job.article_page);
    if(!job.identity_verified||expected!==assetPii(tab.url))return {status:"最终PDF与原论文身份不一致，未下载"};
@@ -193,7 +200,7 @@ async function checkTab(tabId,force=false){
     job.attempted=signature;job.viewer_url=pdf;job.native_until=Date.now()+180000;managed[tabId]=job;await chrome.storage.local.set({managed});await progress(job,"ACCESS_UNKNOWN",true,s);
     await chrome.tabs.update(tabId,{url:pdf});setTimeout(()=>checkTab(tabId).catch(()=>{}),3000);return {status:"正在打开本篇PDF预览/下载准备页"};
    }
-   return assetPii(pdf)?beginObservedPdf(tabId,job,pdf,"DOCUMENT_LINK"):startDownload(tabId,job,pdf,s,force);
+   return fileResponseIdentity(job,pdf)?beginObservedPdf(tabId,job,pdf,"DOCUMENT_LINK"):startDownload(tabId,job,pdf,s,force);
   }
   if(viewer&&job.ieee_article_id&&!pdf&&!s.no_access&&!s.password_form){
    const automatic=await retryKnownIeeeFile(tabId,job);if(automatic)return automatic;
@@ -256,7 +263,7 @@ async function handleTabReady(id){
  const tab=await chrome.tabs.get(id);const {managed={}}=await chrome.storage.local.get("managed");
  if(assetPii(tab.url)||sdArticle(tab.url)){
   if(!await restoreScienceDirect(tab))return {status:"当前论文未匹配所选待处理篇"};
- }else if(!managed[id])return;
+ }else if(!managed[id]&&!await restoreMdpiFile(tab))return;
  return checkTab(id);
 }
 chrome.tabs.onUpdated.addListener((id,change,tab)=>{

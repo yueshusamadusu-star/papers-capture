@@ -32,3 +32,4 @@ jobs:
       - run: node tests/test_chrome_ieee.cjs
       - run: node tests/test_auto_pdf.cjs
       - run: node tests/test_sd_resume.cjs
+      - run: node tests/test_mdpi_pdf.cjs

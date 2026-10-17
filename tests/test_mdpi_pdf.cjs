@@ -1,0 +1,47 @@
+"use strict";
+const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),assert=require('node:assert/strict');
+const EXT=path.join(__dirname,'../browser-extension'),SID='a'.repeat(32),ATTEMPT='e'.repeat(32),DOI='10.3390/metrology5040071';
+const PAGE='https://www.mdpi.com/2673-8244/5/4/71',PDF_URL=PAGE+'/pdf',CDN='https://mdpi-res.com/d_attachment/metrology/metrology-05-00071/article_deploy/metrology-05-00071.pdf';
+const PDF=new TextEncoder().encode('%PDF-1.4\nfixture\n%%EOF');
+function fixture(){
+ const paper={doi:DOI,title:'MDPI Fixture',article_url:PAGE,status:'ACCESS_UNKNOWN',active_attempt:{id:ATTEMPT}};
+ const job={session_id:SID,index:0,doi:DOI,attempt_id:ATTEMPT,identity_verified:true,article_page:PAGE};
+ const storage={token:'fixture-token',activeSessionId:SID,managed:{7:job}},calls=[],callbacks={};
+ const state={tabUrl:PAGE,status:200,mime:'application/pdf',body:PDF,finalUrl:CDN+'?version=fixture-private',complete:false,papers:[paper],
+  snapshot:{doi:DOI,pdf_links:[PDF_URL],auth_links:[],viewer_pdf_links:[],password_form:false,no_access:false,challenge:false}};
+ const chrome={storage:{local:{get:async()=>structuredClone(storage),set:async v=>Object.assign(storage,structuredClone(v)),remove:async k=>{delete storage[k];}}},
+  runtime:{id:'fixture-extension',getManifest:()=>({version:'0.5.6'}),onMessage:{addListener:f=>{callbacks.message=f;}}},action:{setBadgeText:async()=>{}},
+  tabs:{get:async id=>({id,url:state.tabUrl,status:id===11?'loading':'complete'}),query:async()=>[{id:7}],create:async opts=>{calls.push({create:opts});return {id:11};},
+   onUpdated:{addListener:f=>{callbacks.updated=f;}},onActivated:{addListener:()=>{}}},
+  downloads:{download:async opts=>{calls.push({nativeDownload:opts});return 20;},search:async()=>[],onChanged:{addListener:()=>{}},onDeterminingFilename:{addListener:()=>{}}},
+  scripting:{executeScript:async()=>[{result:structuredClone(state.snapshot)}]},webRequest:{onHeadersReceived:{addListener:f=>{callbacks.pdf=f;}}}};
+ const sandbox={chrome,URL,AbortController,Uint8Array,TextDecoder,setTimeout,clearTimeout,console,fetch:async(url,options)=>{
+  if(String(url).startsWith('https://')){calls.push({remote:String(url),options});const response=new Response(state.body,{status:state.status,headers:{'Content-Type':state.mime}});Object.defineProperty(response,'url',{value:state.finalUrl});return response;}
+  const api=String(url).split('/').pop(),data=api!=='pdf-bytes'&&options?.body?JSON.parse(options.body):null;calls.push({api,data,headers:options?.headers});
+  if(api==='pdf-bytes'){state.complete=true;paper.status='SAVED';return {ok:true,json:async()=>({papers:[{status:'SAVED',title:paper.title,file:{saved_path:'D:/论文/MDPI Fixture.pdf'}}]})};}
+  if(api==='download-attempt')return {ok:true,json:async()=>({status:'READY',attempt:{id:'f'.repeat(32)}})};
+  return {ok:true,json:async()=>({tasks:[{session_id:SID,papers:state.papers}]})};
+ }};
+ sandbox.importScripts=(...files)=>files.forEach(f=>vm.runInContext(fs.readFileSync(path.join(EXT,f),'utf8'),sandbox));vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(EXT,'background.js'),'utf8'),sandbox);
+ return {storage,calls,state,job,paper,callbacks,invoke:(fn,...args)=>vm.runInContext(fn,sandbox)(...args)};
+}
+(async()=>{
+ let checks=0;
+ {const f=fixture();assert.equal((await f.invoke('mdpiArticleRecord',PAGE)).path,'/2673-8244/5/4/71');for(const u of [PAGE.replace('https:','http:'),PAGE.replace('www.mdpi.com','www.mdpi.com.evil.example'),PAGE.replace('www.mdpi.com','user:password@www.mdpi.com'),PAGE.replace('www.mdpi.com','www.mdpi.com:8443'),PAGE+'/other'])assert.equal(await f.invoke('mdpiArticleRecord',u),null);checks++;}
+ {const f=fixture();assert.equal((await f.invoke('mdpiBinding',f.job)).slug,'metrology-05-00071');const sensors={...f.job,doi:'10.3390/molecules24082427',article_page:'https://www.mdpi.com/1420-3049/24/8/2427'};assert.equal((await f.invoke('mdpiBinding',sensors)).slug,'molecules-24-02427');
+  for(const job of [{...f.job,identity_verified:false},{...f.job,doi:'10.3390/metrology5040072'},{...f.job,article_page:PAGE.replace('/5/4/','/6/4/')},{...f.job,doi:'10.1000/metrology5040071'}])assert.equal(await f.invoke('mdpiBinding',job),null);checks++;}
+ {const f=fixture();for(const u of [PDF_URL,PDF_URL+'?version=123',CDN,CDN+'?version=123'])assert.equal(await f.invoke('mdpiFileIdentity',f.job,u),true);
+  for(const u of [PAGE,PAGE+'/xml',CDN.replace('00071','00072'),CDN.replace('metrology-05','metrology-06'),CDN.replace('/metrology/','/sensors/'),CDN.replace('mdpi-res.com','mdpi-res.com.evil.example'),CDN.replace('mdpi-res.com','user:password@mdpi-res.com'),CDN.replace('https:','http:'),CDN.replace('.pdf','.pdf/other')])assert.equal(await f.invoke('mdpiFileIdentity',f.job,u),false);checks++;}
+ {const f=fixture();await f.invoke('checkTab',7,true);assert(f.state.complete);assert.equal(f.calls.filter(c=>c.remote).length,1);assert.equal(f.calls.find(c=>c.remote).remote,PDF_URL);assert.equal(f.calls.filter(c=>c.nativeDownload).length,0);assert.equal(f.calls.find(c=>c.api==='pdf-bytes').headers['X-Papers-Attempt'],ATTEMPT);assert.equal(JSON.stringify(f.storage).includes('fixture-private'),false);checks++;}
+ {for(const snapshot of [{doi:'10.3390/metrology5040072'},{challenge:true}]){const f=fixture();Object.assign(f.state.snapshot,snapshot);await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.remote||c.nativeDownload).length,0);}checks++;}
+ {const f=fixture();f.state.snapshot.pdf_links=[PDF_URL.replace('/71/','/72/')];await f.invoke('checkTab',7,true);assert.equal(f.calls.filter(c=>c.remote||c.nativeDownload).length,0);assert(!f.state.complete);checks++;}
+ {const f=fixture();f.state.snapshot.pdf_links=['https://www.mdpi.com/unrelated.pdf'];await f.invoke('checkTab',7,true);assert.equal(f.calls.filter(c=>c.remote||c.nativeDownload).length,0);checks++;}
+ {const f=fixture();f.state.mime='text/html';f.state.body=new TextEncoder().encode('<html>Verify you are human</html>');await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.nativeDownload||c.api==='pdf-bytes').length,0);assert.match(f.storage.lastFailure.summary,/网页|格式/);checks++;}
+ {for(const status of [403,429]){const f=fixture();f.state.status=status;await f.invoke('checkTab',7,true);await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.remote).length,1);assert.equal(f.calls.filter(c=>c.nativeDownload).length,0);assert.match(f.storage.lastFailure.summary,new RegExp(String(status)));}checks++;}
+ {const f=fixture();f.state.finalUrl=CDN.replaceAll('00071','00072');await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.api==='pdf-bytes').length,0);assert.match(f.storage.lastFailure.summary,/身份/);checks++;}
+ {const f=fixture();const response={tabId:8,statusCode:200,url:CDN,responseHeaders:[{name:'Content-Type',value:'application/pdf'}]};await f.invoke('observePdfResponse',response);assert(f.state.complete);assert.equal(f.storage.managed[8].doi,DOI);await f.invoke('observePdfResponse',response);assert.equal(f.calls.filter(c=>c.remote).length,1);assert.equal(f.calls.filter(c=>c.nativeDownload).length,0);checks++;}
+ {const f=fixture();f.state.tabUrl=CDN;await f.invoke('adoptCurrent',{id:8,url:CDN},SID);await f.invoke('checkTab',8,true);assert(f.state.complete);const wrong=fixture();await assert.rejects(wrong.invoke('adoptCurrent',{id:8,url:CDN.replaceAll('00071','00072')},SID));assert(!wrong.state.complete);checks++;}
+ {const f=fixture();f.paper.active_attempt.id='b'.repeat(32);assert.equal(await f.invoke('restoreMdpiFile',{id:8,url:CDN},SID),false);assert.equal(f.storage.managed[8],undefined);checks++;}
+ {const f=fixture();f.state.papers.push({doi:'10.1000/next',title:'下一篇',article_url:'https://www.scitepress.org/next',status:'BROWSER_PENDING'});await f.invoke('checkTab',7,true);assert(f.state.complete);assert.equal(f.calls.filter(c=>c.create).length,1);assert.equal(f.calls.find(c=>c.create).create.url,'https://www.scitepress.org/next');checks++;}
+ console.log(JSON.stringify({status:'PASS',checks,scope:'MDPI original article to matched PDF bytes and queue continuation; mocked Chrome/network, no live browser acceptance'}));
+})().catch(error=>{console.error(error);process.exitCode=1;});

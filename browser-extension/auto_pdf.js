@@ -1,10 +1,10 @@
 "use strict";
-// 仅处理本人已选任务中、身份已核对的IEEE/ScienceDirect文件响应。
+// 仅处理本人已选任务中、身份已核对的IEEE/ScienceDirect/AIP/MDPI文件响应。
 const capturedPdfResponses=new Map(),autoPdfStarting=new Set();
 const transferKey=job=>job.session_id+":"+job.index+(job.attempt_id?":"+job.attempt_id:"");
 function fileResponseIdentity(job,url){
  if(job.ieee_article_id)return ieeeArticleId(url)===job.ieee_article_id;
- if(aipFileIdentity(job,url))return true;
+ if(aipFileIdentity(job,url)||mdpiFileIdentity(job,url))return true;
  const expected=job.expected_pii||articlePii(job.article_page);
  return Boolean(expected&&assetPii(url)===expected);
 }
@@ -45,6 +45,10 @@ async function observePdfResponse(details){
   if(!await restoreScienceDirect({id:details.tabId,url:details.url}))return;
   ({managed={}}=await chrome.storage.local.get("managed"));job=managed[details.tabId];
  }
+ if(!job?.identity_verified||!fileResponseIdentity(job,details.url)){
+  if(!await restoreMdpiFile({id:details.tabId,url:details.url}))return;
+  ({managed={}}=await chrome.storage.local.get("managed"));job=managed[details.tabId];
+ }
  if(!job?.identity_verified||!fileResponseIdentity(job,details.url))return;
  // 临时文件链接仅保存在服务工作者内存，不写任务、配置或日志。
  capturedPdfResponses.set(transferKey(job),{url:details.url,at:Date.now()});
@@ -64,7 +68,7 @@ async function retryKnownIeeeFile(tabId,job){
 }
 if(chrome.webRequest?.onHeadersReceived){
  chrome.webRequest.onHeadersReceived.addListener(details=>{observePdfResponse(details).catch(()=>reportFailure("BROWSER_OPERATION"));},
-  {urls:["https://ieeexplore.ieee.org/*","https://pdf.sciencedirectassets.com/*","https://pubs.aip.org/*"]},["responseHeaders"]);
+  {urls:["https://ieeexplore.ieee.org/*","https://pdf.sciencedirectassets.com/*","https://pubs.aip.org/*","https://www.mdpi.com/*","https://mdpi.com/*","https://mdpi-res.com/*"]},["responseHeaders"]);
 }
 
 async function stopAutomaticTransfer(job){
