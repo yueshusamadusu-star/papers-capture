@@ -184,12 +184,14 @@ class RegularBridge:
             safe['extension_version'] = data['extension_version']
         if data.get('page_kind') in {'SD_PDF', 'SD_ARTICLE', 'OTHER'}: safe['page_kind'] = data['page_kind']
         codes = {'POPUP', 'BOUND', 'NO_TASK', 'AMBIGUOUS_TASK', 'PII_MISMATCH', 'NO_OFFICIAL_BINDING', 'DOI_CONFLICT', 'UNRELATED_PAGE'}
-        codes |= {'TRANSFER_STARTED','TRANSFER_HTTP','TRANSFER_FAILED','TRANSFER_SAVED','LINK_REFRESH','WAIT_DUPLICATE'}
+        codes |= {'TRANSFER_STARTED','TRANSFER_HTTP','TRANSFER_FAILED','TRANSFER_SAVED','LINK_REFRESH','WAIT_DUPLICATE','TRANSFER_BODY'}
         if data.get('phase') in {'FETCH','BODY','LOCAL','DONE','RENEW'}: safe['phase'] = data['phase']
         if type(data.get('http_status')) is int and 100 <= data['http_status'] <= 599: safe['http_status'] = data['http_status']
         if data.get('mime_kind') in {'PDF','HTML','BINARY','OTHER','UNKNOWN'}: safe['mime_kind'] = data['mime_kind']
+        if data.get('body_kind') in {'PDF','HTML','EMPTY','OTHER'}: safe['body_kind'] = data['body_kind']
+        if type(data.get('body_bytes')) is int and 0 <= data['body_bytes'] <= MAX_PDF: safe['body_bytes'] = data['body_bytes']
         if data.get('link_state') in {'EXPIRED','LIVE','UNKNOWN'}: safe['link_state'] = data['link_state']
-        if data.get('reason') in {'HTTP_ERROR','NETWORK','TIMEOUT','FINAL_IDENTITY','MIME_NOT_PDF','PDF_INCOMPLETE','SIZE_LIMIT','LOCAL_REJECTED','MISSING_PAIRING','SIGNED_URL_EXPIRED'}: safe['reason'] = data['reason']
+        if data.get('reason') in {'HTTP_ERROR','NETWORK','TIMEOUT','FINAL_IDENTITY','MIME_NOT_PDF','PDF_INCOMPLETE','SIZE_LIMIT','LOCAL_REJECTED','MISSING_PAIRING','SIGNED_URL_EXPIRED','EMPTY_RESPONSE','HTML_RESPONSE','NOT_PDF_CONTENT'}: safe['reason'] = data['reason']
         if data.get('result') not in codes: raise HelperError('诊断代码无效')
         safe['result'] = data['result']
         path = self.manager.browser_dir/'extension-diagnostic.json'
@@ -339,7 +341,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.6','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.7','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':

@@ -25,9 +25,10 @@ async function refreshExpiredFile(tabId,job){
  await chrome.tabs.update(tabId,{url:result.article_url});
  return {status:"旧PDF临时链接已过期，已返回同篇官网更新一次，正在接续"};
 }
-async function pdfResponseBytes(response){
+async function pdfResponseBytes(response,detail={}){
  if(response.status!==200)throw saveError("FETCH_PDF","HTTP_ERROR");
- const kind=mimeKind(response.headers.get("content-type"));if(!["PDF","BINARY"].includes(kind))throw saveError("FETCH_PDF","MIME_NOT_PDF");
+ // 缺少格式头时仍检查有界完整内容；明确声明HTML等格式时保持拒绝。
+ const kind=mimeKind(response.headers.get("content-type"));if(!["PDF","BINARY","UNKNOWN"].includes(kind))throw saveError("FETCH_PDF","MIME_NOT_PDF");
  const advertised=Number(response.headers.get("content-length"));if(advertised>DIRECT_PDF_LIMIT)throw saveError("FETCH_PDF","SIZE_LIMIT");
  let bytes;
  if(response.body?.getReader){
@@ -36,7 +37,13 @@ async function pdfResponseBytes(response){
   bytes=new Uint8Array(total);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.byteLength;}
  }else bytes=new Uint8Array(await response.arrayBuffer());
  if(bytes.byteLength>DIRECT_PDF_LIMIT)throw saveError("FETCH_PDF","SIZE_LIMIT");
- if(bytes.byteLength<12||new TextDecoder().decode(bytes.slice(0,5))!=="%PDF-"||!new TextDecoder().decode(bytes.slice(-2048)).includes("%%EOF"))throw saveError("FETCH_PDF","PDF_INCOMPLETE");
+ detail.body_bytes=bytes.byteLength;
+ const prefix=new TextDecoder().decode(bytes.slice(0,256));
+ detail.body_kind=!bytes.byteLength?"EMPTY":prefix.startsWith("%PDF-")?"PDF":/^\s*(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)/i.test(prefix)?"HTML":"OTHER";
+ if(detail.body_kind==="EMPTY")throw saveError("FETCH_PDF","EMPTY_RESPONSE");
+ if(detail.body_kind==="HTML")throw saveError("FETCH_PDF","HTML_RESPONSE");
+ if(detail.body_kind!=="PDF")throw saveError("FETCH_PDF","NOT_PDF_CONTENT");
+ if(bytes.byteLength<12||!new TextDecoder().decode(bytes.slice(-2048)).includes("%%EOF"))throw saveError("FETCH_PDF","PDF_INCOMPLETE");
  return bytes;
 }
 async function savePdfDirect(tabId,job,url){
@@ -51,7 +58,8 @@ async function savePdfDirect(tabId,job,url){
   await recordTransfer(job,"TRANSFER_HTTP",detail);
   if(response.status!==200)throw saveError("FETCH_PDF","HTTP_ERROR");
   if(!fileResponseIdentity(job,response.url))throw saveError("FETCH_PDF","FINAL_IDENTITY");
-  detail.phase="BODY";const bytes=await pdfResponseBytes(response);
+  detail.phase="BODY";const bytes=await pdfResponseBytes(response,detail);
+  await recordTransfer(job,"TRANSFER_BODY",detail);
   const {token}=await chrome.storage.local.get("token");if(!token)throw saveError("SAVE_DIRECTORY","MISSING_PAIRING");
   detail.phase="LOCAL";
   const saved=await fetch(ORIGIN+"/pdf-bytes",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/pdf",
@@ -71,7 +79,7 @@ async function savePdfDirect(tabId,job,url){
   }
   const code=error.saveCode||(detail.phase==="LOCAL"?"SAVE_DIRECTORY":"FETCH_PDF");
   await reportFailure(code,job);
-  const messages={HTTP_ERROR:"文件服务器返回HTTP "+(detail.http_status||"未知"),NETWORK:"浏览器网络请求失败",TIMEOUT:"获取文件超时",FINAL_IDENTITY:"最终文件身份不一致",MIME_NOT_PDF:"服务器返回了网页或其他格式",PDF_INCOMPLETE:"文件内容不完整",SIZE_LIMIT:"文件超过25MB",LOCAL_REJECTED:"本机保存接口拒绝文件",MISSING_PAIRING:"本机配对信息缺失",SIGNED_URL_EXPIRED:"临时链接已过期，本次自动更新次数已用完"};
+  const messages={HTTP_ERROR:"文件服务器返回HTTP "+(detail.http_status||"未知"),NETWORK:"浏览器网络请求失败",TIMEOUT:"获取文件超时",FINAL_IDENTITY:"最终文件身份不一致",MIME_NOT_PDF:"服务器返回了网页或其他格式",PDF_INCOMPLETE:"PDF文件内容不完整",EMPTY_RESPONSE:"服务器返回空内容",HTML_RESPONSE:"收到网页内容，尚未取得论文PDF",NOT_PDF_CONTENT:"收到的内容不是PDF",SIZE_LIMIT:"文件超过25MB",LOCAL_REJECTED:"本机保存接口拒绝文件",MISSING_PAIRING:"本机配对信息缺失",SIGNED_URL_EXPIRED:"临时链接已过期，本次自动更新次数已用完"};
   const summary=detail.phase==="LOCAL"&&reason==="NETWORK"?"本机保存接口连接失败":messages[reason]||"文件校验失败";
   await chrome.storage.local.set({lastFailure:{code,summary,when:new Date().toISOString()}});
   return {status:"自动保存未完成："+summary+"；未计入全文"};

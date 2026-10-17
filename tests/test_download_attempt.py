@@ -63,6 +63,16 @@ class DownloadAttemptTests(unittest.TestCase):
         self.bridge.extension_diagnostic({'result':'TRANSFER_FAILED','phase':'FETCH','reason':'HTTP_ERROR','http_status':403,'mime_kind':'HTML','link_state':'LIVE','url':'https://example.invalid/?secret=secret','headers':{'Cookie':'secret'}})
         row=json.loads((self.manager.browser_dir/'extension-diagnostic.json').read_text(encoding='utf-8'))[-1]
         self.assertEqual(row['http_status'],403);self.assertEqual(row['reason'],'HTTP_ERROR');self.assertNotIn('secret',json.dumps(row))
+    def test_body_diagnostic_keeps_only_bounded_kind_and_count(self):
+        for result in ['TRANSFER_BODY','TRANSFER_FAILED']:
+            self.bridge.extension_diagnostic({'result':result,'phase':'BODY','reason':'EMPTY_RESPONSE','body_kind':'EMPTY','body_bytes':0,'body':'secret payload','url':'https://secret.invalid'})
+            row=json.loads((self.manager.browser_dir/'extension-diagnostic.json').read_text(encoding='utf-8'))[-1]
+            self.assertEqual(row['body_kind'],'EMPTY');self.assertEqual(row['body_bytes'],0)
+            self.assertNotIn('secret',json.dumps(row))
+        for kind,count in [('secret',-1),('secret',True),('secret',26*1024*1024)]:
+            self.bridge.extension_diagnostic({'result':'TRANSFER_FAILED','body_kind':kind,'body_bytes':count,'reason':'secret'})
+            row=json.loads((self.manager.browser_dir/'extension-diagnostic.json').read_text(encoding='utf-8'))[-1]
+            self.assertNotIn('body_kind',row);self.assertNotIn('body_bytes',row);self.assertNotIn('reason',row)
     def test_attempt_endpoint_requires_pairing_and_valid_action(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler_for(self.bridge,'fixture-token'));threading.Thread(target=server.serve_forever,daemon=True).start()
         client=build_opener(ProxyHandler({}));url='http://127.0.0.1:'+str(server.server_port)+'/download-attempt'
