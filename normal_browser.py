@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import tempfile
 import subprocess
 import sys
 import threading
@@ -59,8 +60,81 @@ class RegularBridge:
         self.download_roots = {self.download_root}
         if download_root is None:
             self.download_roots.add(downloads_directory().resolve())
+        self.settings_path=settings
+        self.save_directory=Path(json.loads(settings.read_text(encoding="utf-8")).get("save_directory") or manager.helper.output/"papers").resolve() if settings.is_file() else (manager.helper.output/"papers").resolve()
         self.lock=threading.Lock()
         self.network=IeeeNetworkPolicy(manager.browser_dir)
+
+    def preferences(self):
+        return {'save_directory':str(self.save_directory),'filename_rule':'论文题名.pdf','save_mode':'DIRECT_LOCAL_SAVE'}
+
+    def configure(self, data):
+        raw=data.get('save_directory')
+        if not isinstance(raw,str) or not raw.strip() or len(raw)>2000 or any(ord(c)<32 for c in raw):
+            raise HelperError('请填写完整保存目录')
+        folder=Path(raw.strip().strip('"')).expanduser()
+        if not folder.is_absolute(): raise HelperError('保存目录须为完整路径')
+        folder=folder.resolve()
+        with self.lock:
+            folder.mkdir(parents=True,exist_ok=True)
+            with tempfile.TemporaryFile(dir=folder): pass
+            settings=json.loads(self.settings_path.read_text(encoding='utf-8')) if self.settings_path.is_file() else {}
+            settings['save_directory']=str(folder)
+            self.settings_path.parent.mkdir(parents=True,exist_ok=True)
+            atomic_json(self.settings_path,settings)
+            self.save_directory=folder
+        return self.preferences()
+
+    def named_copy(self, body, paper):
+        # 题名作为文件名；替换Windows非法字符，限制长度，不覆盖同名的不同内容。
+        title=re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(paper.get('title') or paper['doi']))
+        title=re.sub(r'\s+', ' ', title).strip(' .')[:140].rstrip(' .') or '论文'
+        if re.match(r'^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\.|$)',title,re.I): title='_'+title
+        self.save_directory.mkdir(parents=True,exist_ok=True)
+        digest=hashlib.sha256(body).hexdigest()
+        for number in range(1,1001):
+            suffix='' if number==1 else ' ('+str(number)+')'
+            path=self.save_directory/(title+suffix+'.pdf')
+            if path.exists() or path.is_symlink():
+                if path.is_file() and not path.is_symlink() and path.stat().st_size==len(body) and hashlib.sha256(path.read_bytes()).hexdigest()==digest:
+                    return str(path)
+                continue
+            try:
+                with path.open('xb') as stream: stream.write(body)
+            except FileExistsError: continue
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            return str(path)
+        raise HelperError('同题名文件过多，请选择其他保存目录')
+
+    def store_pdf(self, state, paper, body, transfer):
+        result=self.manager.helper._save_pdf(body,paper['doi'],{'origin':'regular_browser_extension',**transfer,
+            'paper_identity':'EXPECTED_PAPER_IDENTITY_MATCHED_BEFORE_DOWNLOAD',
+            'entitlement_evidence':'BROWSER_RECEIVED_COMPLETE_PDF',
+            'note':'本人浏览器取得全文，本机校验保存；不接收Cookie或密码'})
+        result['saved_path']=self.named_copy(body,paper)
+        paper['status'],paper['file']=result['status'],result
+        paper.setdefault('browser_evidence',{}).update(transfer)
+        paper.pop('reason',None);paper.pop('native_save_required',None)
+        paper.get('browser_evidence',{}).pop('failure_code',None)
+
+    def receive_pdf(self, sid, index, body, trigger):
+        with self.lock:
+            state=self.manager.load(sid)
+            if state.get('backend')!='regular_extension' or state['status']=='CLOSED' or type(index) is not int or not 0<=index<len(state['papers']):
+                raise HelperError('未授权任务')
+            paper=state['papers'][index]
+            if paper['status'] in {'SAVED','ALREADY_EXISTS'}: return self.manager.status(sid)
+            if paper['status']!='DOWNLOADING' or paper.get('browser_evidence',{}).get('identity_matched') is not True:
+                raise HelperError('缺少当前论文身份核对')
+            if trigger not in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK'}: raise HelperError('触发来源无效')
+            self.store_pdf(state,paper,body,{'download_method':'EXTENSION_FETCH','download_trigger':trigger,'save_transport':'BROWSER_FETCH_TO_LOCAL_SERVICE'})
+            pending=[i for i,p in enumerate(state['papers']) if p['status'] not in TERMINAL]
+            state['status']='FINISHED' if not pending else paper['status']
+            state['current_index']=pending[0] if pending else None
+            self.manager.save(state)
+            return self.manager.status(sid)
 
     def tasks(self):
         result=[]
@@ -92,16 +166,14 @@ class RegularBridge:
                 method = data.get('download_method')
                 trigger = data.get('download_trigger')
                 transfer = {}
-                if method in {'EXTENSION_REQUEST','BROWSER_NATIVE'}:
+                if method in {'EXTENSION_REQUEST','BROWSER_NATIVE','EXTENSION_FETCH'}:
                     transfer['download_method'] = method
                 if trigger in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK','READER_BUTTON'}:
                     transfer['download_trigger'] = trigger
                 if type(data.get('extension_initiated')) is bool:
                     transfer['extension_initiated'] = data['extension_initiated']
                 try:
-                    result=self.manager.helper._save_pdf(body,paper['doi'],{'origin':'regular_browser_extension',**transfer,
-                           'paper_identity':'EXPECTED_PAPER_IDENTITY_MATCHED_BEFORE_DOWNLOAD','entitlement_evidence':'BROWSER_DOWNLOAD_COMPLETE_AND_VALID_PDF',
-                           'note':'在本人正常浏览器内下载；不导出Cookie/密码，保留原下载文件'})
+                    self.store_pdf(state,paper,body,transfer)
                 except PdfResponseError:
                     if b'security verification' in body.lower() or b'challenges.cloudflare.com' in body.lower():
                         paper['status']='NEED_BROWSER_SAVE';paper['native_save_required']=True
@@ -109,12 +181,6 @@ class RegularBridge:
                     else:
                         paper['status']='ACCESS_UNKNOWN'
                         paper['reason']='下载结果不是完整PDF，可能为预览/登录/验证页；未计入全文'
-                else:
-                    paper['status'],paper['file']=result['status'],result
-                    paper.setdefault('browser_evidence',{}).update(transfer)
-                    paper.pop('reason',None)
-                    paper.pop('native_save_required',None)
-                    paper.get('browser_evidence',{}).pop('failure_code',None)
             else:
                 observed=data.get('status')
                 allowed={'NEED_USER_AUTHENTICATION','CHALLENGE_REQUIRED','ACCESS_UNKNOWN','SKIPPED_NO_ACCESS','SKIPPED_BY_USER','DOWNLOADING','DOWNLOAD_ERROR','NEED_BROWSER_SAVE','NEED_IEEE_NETWORK_ROUTE'}
@@ -136,9 +202,9 @@ class RegularBridge:
                 if data.get('failure_code') in reasons:
                     paper['browser_evidence']['failure_code']=data['failure_code'];paper['reason']=reasons[data['failure_code']]
                 elif observed=='DOWNLOADING':paper.pop('reason',None)
-                if data.get('download_method') in {'EXTENSION_REQUEST','BROWSER_NATIVE'}:
+                if data.get('download_method') in {'EXTENSION_REQUEST','BROWSER_NATIVE','EXTENSION_FETCH'}:
                     paper['browser_evidence']['download_method']=data['download_method']
-                    if observed == 'DOWNLOADING' and data['download_method'] == 'EXTENSION_REQUEST':
+                    if observed == 'DOWNLOADING' and data['download_method'] in {'EXTENSION_REQUEST','EXTENSION_FETCH'}:
                         paper.pop('native_save_required', None)
                 if data.get('download_trigger') in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK','READER_BUTTON'}:
                     paper['browser_evidence']['download_trigger']=data['download_trigger']
@@ -169,23 +235,33 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.0','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.1','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
                 self.send_json(200,bridge.network.browser_template()); return
+            if self.path=='/preferences':
+                self.send_json(200,bridge.preferences()); return
             if self.path=='/tasks':
                 self.send_json(200,{'tasks':bridge.tasks()}); return
             self.send_json(404,{'status':'NOT_FOUND'})
         def do_POST(self):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
-            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic'}:
+            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes'}:
                 self.send_json(404,{'status':'NOT_FOUND'}); return
             try:
                 count=int(self.headers.get('Content-Length','0'))
+                if self.path=='/pdf-bytes':
+                    if self.headers.get('Content-Type')!='application/pdf' or not 0<count<=MAX_PDF: raise HelperError('PDF大小或类型不合要求')
+                    self.connection.settimeout(30)
+                    body=self.rfile.read(count)
+                    if len(body)!=count: raise HelperError('文件传输不完整')
+                    self.send_json(200,bridge.receive_pdf(self.headers.get('X-Papers-Session',''),int(self.headers.get('X-Papers-Index','-1')),body,self.headers.get('X-Papers-Trigger',''))); return
                 if not 0<count<=8192: raise HelperError('请求大小不合要求')
                 data=json.loads(self.rfile.read(count))
+                if self.path=='/preferences':
+                    self.send_json(200,bridge.configure(data)); return
                 if self.path=='/ieee-browser-diagnostic':
                     self.send_json(200,bridge.network.record_browser(data)); return
                 if self.path=='/ieee-network':
@@ -194,7 +270,7 @@ def handler_for(bridge, token):
                     self.send_json(200,getattr(bridge.network,data['action'])()); return
                 self.send_json(200,bridge.update(data,self.path=='/complete'))
             except (HelperError,OSError,ValueError,TypeError):
-                self.send_json(400,{'status':'REJECTED','message':'状态或下载文件校验失败，未冒称已保存；浏览器自定义下载目录需配置LIT_BROWSER_DOWNLOAD_DIR'})
+                self.send_json(400,{'status':'REJECTED','message':'状态、文件或保存目录校验失败，未计入全文；请检查保存目录及当前任务'})
     return Handler
 
 

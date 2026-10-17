@@ -25,7 +25,7 @@ async function beginObservedPdf(tabId,job,url,trigger){
  }catch(error){
   job.auto_pdf_started=false;
   const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
-  await reportFailure("BROWSER_OPERATION",job);
+  await reportFailure(error.saveCode||"BROWSER_OPERATION",job);
   return {status:"自动下载未完成，请查看当前任务提示"};
  }finally{autoPdfStarting.delete(key);}
 }

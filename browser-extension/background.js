@@ -1,5 +1,5 @@
 "use strict";
-importScripts("chrome_ieee.js","auto_pdf.js");
+importScripts("chrome_ieee.js","direct_save.js","auto_pdf.js");
 const ORIGIN="http://127.0.0.1:8766";
 const domains=["sciencedirect.com","elsevier.com","ieee.org","scitepress.org","mdpi.com","mdpi-res.com","arxiv.org","ncbi.nlm.nih.gov","springer.com","springerlink.com","nature.com","wiley.com","tandfonline.com","acm.org","cambridge.org","oup.com","sagepub.com","iop.org","aps.org","aip.org"];
 const allowed=value=>{try{const u=new URL(value);return u.protocol==="https:"&&!u.username&&!u.password&&domains.some(d=>u.hostname===d||u.hostname.endsWith("."+d));}catch{return false;}};
@@ -18,7 +18,7 @@ const ieeeArticleId=value=>{try{
 }catch{return "";}};
 const ieeeArticlePage=value=>{try{return /^\/(?:abstract\/)?document\/[0-9]+\/?$/.test(new URL(value).pathname)&&Boolean(ieeeArticleId(value));}catch{return false;}};
 const checking=new Set(),completing=new Set(),opening=new Set(),transfers=new Set();
-const failureMessages={DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
+const failureMessages={FETCH_PDF:"未取得完整PDF，已停止；请返回原论文页检查访问权限",SAVE_DIRECTORY:"PDF未保存，请检查插件中的保存目录",DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
 async function reportFailure(code,job){
  const key=code in failureMessages?code:"BROWSER_OPERATION";
  await chrome.storage.local.set({lastFailure:{code:key,summary:failureMessages[key],when:new Date().toISOString()}});
@@ -75,8 +75,10 @@ async function startDownload(tabId,job,url,snapshot={},force=false){
  if(transfers.has(key)||(!force&&job.attempted===signature))return {status:"等待下载结果"};
  transfers.add(key);
  try{
-  job.attempted=signature;job.transfer_method="EXTENSION_REQUEST";job.download_trigger=snapshot.download_trigger||"DOCUMENT_LINK";const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
-  await progress(job,"DOWNLOADING",true,{...snapshot,download_method:"EXTENSION_REQUEST",download_trigger:job.download_trigger});
+  const direct=fileResponseIdentity(job,url);
+  job.attempted=signature;job.transfer_method=direct?"EXTENSION_FETCH":"EXTENSION_REQUEST";job.download_trigger=snapshot.download_trigger||"DOCUMENT_LINK";const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
+  await progress(job,"DOWNLOADING",true,{...snapshot,download_method:job.transfer_method,download_trigger:job.download_trigger});
+  if(direct)return await savePdfDirect(tabId,job,url);
   const id=await chrome.downloads.download({url,filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify",saveAs:false});
   const {downloads={}}=await chrome.storage.local.get("downloads");downloads[id]=job;await chrome.storage.local.set({downloads});
   const items=await chrome.downloads.search({id});if(items[0]?.state==="complete")await completedDownload(id);
@@ -222,6 +224,11 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message.action==="pair"){
    if(!sender.url?.startsWith(ORIGIN+"/pair")||!/^[-_a-zA-Z0-9]{40,60}$/.test(message.token||""))throw Error("配对来源无效");
    await chrome.storage.local.set({token:message.token});await api("/health");return {status:"PAIRED"};
+  }
+  if(message.action==="preferences")return api("/preferences");
+  if(message.action==="save-preferences"){
+   if(sender.url&&!sender.url.startsWith("chrome-extension://"+chrome.runtime.id+"/"))throw Error("请在插件窗口设置目录");
+   return api("/preferences",{save_directory:message.save_directory});
   }
   if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure,lastSuccess}=await chrome.storage.local.get(["lastFailure","lastSuccess"]);return {...result,last_failure:lastFailure,last_success:lastSuccess};}
   if(["chrome-ieee-inspect","chrome-ieee-enable","chrome-ieee-restore"].includes(message.action)){
