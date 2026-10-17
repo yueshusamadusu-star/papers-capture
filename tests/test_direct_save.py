@@ -13,7 +13,7 @@ from normal_browser import RegularBridge,handler_for
 PDF=b'%PDF-1.4\nfixture\n%%EOF'
 class DirectSaveTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
+        self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name).resolve()
         self.manager=CollectionManager(LiteratureHelper(self.root/'library'),self.root/'private')
         self.bridge=RegularBridge(self.manager,self.root/'Downloads')
         self.state=self.manager._create('试验',['ultrasonic'],[],[{'doi':'10.1000/a','identifier':'10.1000/a','title':'中文论文: Air / Flow?','article_url':'https://doi.org/10.1000/a','status':'DOWNLOADING','browser_evidence':{'identity_matched':True}}],False,False)
