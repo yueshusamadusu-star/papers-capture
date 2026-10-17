@@ -18,7 +18,7 @@ import time
 from urllib.request import Request, build_opener, ProxyHandler
 import webbrowser
 
-from literature_helper import LiteratureHelper, HelperError, MAX_PDF, PdfResponseError
+from literature_helper import LiteratureHelper, HelperError, MAX_PDF, PdfResponseError, normalize_doi, sciencedirect_binding
 from collection_workflow import CollectionManager, atomic_json, now
 from browser_worker import TERMINAL
 from ieee_network import IeeeNetworkPolicy
@@ -125,7 +125,7 @@ class RegularBridge:
             if state.get('backend')!='regular_extension' or state['status']=='CLOSED' or type(index) is not int or not 0<=index<len(state['papers']):
                 raise HelperError('未授权任务')
             paper=state['papers'][index]
-            if paper['status'] in {'SAVED','ALREADY_EXISTS'}: return self.manager.status(sid)
+            if paper['status'] in TERMINAL: return self.manager.status(sid)
             if paper['status']!='DOWNLOADING' or paper.get('browser_evidence',{}).get('identity_matched') is not True:
                 raise HelperError('缺少当前论文身份核对')
             if trigger not in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK'}: raise HelperError('触发来源无效')
@@ -136,13 +136,45 @@ class RegularBridge:
             self.manager.save(state)
             return self.manager.status(sid)
 
+    def paper_binding(self, data):
+        sid, index = data.get('session_id', ''), data.get('index')
+        def selected():
+            state = self.manager.load(sid)
+            if (state.get('backend') != 'regular_extension' or state['status'] in {'CLOSED', 'FINISHED'}
+                    or type(index) is not int or not 0 <= index < len(state['papers'])
+                    or state['papers'][index]['status'] in TERMINAL):
+                raise HelperError('不是待处理的普通浏览器论文')
+            return state, state['papers'][index]
+        with self.lock:
+            state, paper = selected()
+            expected = normalize_doi(paper['doi'])
+            cached = paper.get('publisher_binding', {})
+            safe = sciencedirect_binding({'DOI': expected, 'resource': {'primary': {'URL': cached.get('publisher_article_url', '')}}})
+            if cached.get('source') == 'Crossref' and cached.get('doi') == expected and safe.get('publisher_pii') == cached.get('publisher_pii') and safe:
+                return {'status': 'BOUND', **cached}
+        # 网络查询期间不占任务锁；返回后重新读取，避免覆盖已下载/跳过的进度。
+        metadata = self.manager.helper.lookup(expected)['paper']
+        if normalize_doi(metadata.get('doi', '')) != expected:
+            raise HelperError('官方元数据DOI不对应')
+        safe = sciencedirect_binding({'DOI': expected, 'resource': {'primary': {'URL': metadata.get('publisher_article_url', '')}}})
+        if not safe or safe.get('publisher_pii') != metadata.get('publisher_pii'):
+            return {'status': 'UNKNOWN'}
+        binding = {'doi': expected, 'source': 'Crossref', **safe}
+        with self.lock:
+            state, paper = selected()
+            if normalize_doi(paper['doi']) != expected:
+                raise HelperError('论文身份已变化')
+            paper.update(safe, publisher_binding=binding)
+            self.manager.save(state)
+        return {'status': 'BOUND', **binding}
+
     def tasks(self):
         result=[]
         if self.manager.root.exists():
             for path in self.manager.root.glob('*/state.json'):
                 state=self.manager.load(path.parent.name)
                 if state.get('backend')=='regular_extension' and state['status'] not in {'FINISHED','CLOSED'}:
-                    result.append({k:state[k] for k in ['session_id','original_prompt','papers','status']})
+                    result.append({k:state[k] for k in ['session_id','original_prompt','papers','status','current_index']})
         return result
 
     def update(self, data, completed=False):
@@ -154,7 +186,7 @@ class RegularBridge:
             if type(index) is not int or not 0<=index<len(state['papers']):
                 raise HelperError('论文序号无效')
             paper=state['papers'][index]
-            if paper['status'] in {'SAVED','ALREADY_EXISTS'}:
+            if paper['status'] in TERMINAL:
                 return self.manager.status(state['session_id'])
             state['current_index']=index
             if completed:
@@ -196,7 +228,7 @@ class RegularBridge:
                     'pdf_candidates':min(6,max(0,data.get('pdf_candidates',0))) if type(data.get('pdf_candidates',0)) is int else 0}
                 if re.fullmatch(r'\d+\.\d+\.\d+',str(data.get('extension_version',''))):
                     paper['browser_evidence']['extension_version']=data['extension_version']
-                if data.get('identity_source') in {'PAGE_DOI','IEEE_ARTICLE_URL','VERIFIED_PDF_VIEWER'}:
+                if data.get('identity_source') in {'PAGE_DOI','IEEE_ARTICLE_URL','VERIFIED_PDF_VIEWER','CROSSREF_PII'}:
                     paper['browser_evidence']['identity_source']=data['identity_source']
                 reasons={'FETCH_PDF':'没有取得完整PDF，可能需本人认证或网站验证；未保存网页','SAVE_DIRECTORY':'保存目录或文件校验失败，未计入全文','NOT_PDF':'网站返回网页，未取得论文PDF','LOCAL_API':'本机接续或下载目录校验失败','BROWSER_OPERATION':'浏览器操作失败','DOWNLOAD_SECURITY':'下载请求返回安全验证页，请在已打开PDF的阅读器点下载','IEEE_HTTP_418':'IEEE返回418，先核对校园网直连路线，未判无订阅','IEEE_NETWORK_ERROR':'IEEE网络访问失败，先核对直连路线，未判无订阅'}
                 if data.get('failure_code') in reasons:
@@ -235,7 +267,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.2','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.3','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
@@ -248,7 +280,7 @@ def handler_for(bridge, token):
         def do_POST(self):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
-            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes'}:
+            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes','/paper-binding'}:
                 self.send_json(404,{'status':'NOT_FOUND'}); return
             try:
                 count=int(self.headers.get('Content-Length','0'))
@@ -260,6 +292,8 @@ def handler_for(bridge, token):
                     self.send_json(200,bridge.receive_pdf(self.headers.get('X-Papers-Session',''),int(self.headers.get('X-Papers-Index','-1')),body,self.headers.get('X-Papers-Trigger',''))); return
                 if not 0<count<=8192: raise HelperError('请求大小不合要求')
                 data=json.loads(self.rfile.read(count))
+                if self.path=='/paper-binding':
+                    self.send_json(200,bridge.paper_binding(data)); return
                 if self.path=='/preferences':
                     self.send_json(200,bridge.configure(data)); return
                 if self.path=='/ieee-browser-diagnostic':

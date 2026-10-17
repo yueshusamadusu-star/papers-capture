@@ -34,7 +34,11 @@ async function observePdfResponse(details){
  if(details.tabId<0||![200,206].includes(details.statusCode))return;
  const mime=details.responseHeaders?.find(h=>h.name.toLowerCase()==="content-type")?.value||"";
  if(!/^application\/pdf(?:\s*;|$)/i.test(mime))return;
- const {managed={}}=await chrome.storage.local.get("managed"),job=managed[details.tabId];
+ let {managed={}}=await chrome.storage.local.get("managed"),job=managed[details.tabId];
+ if((!job?.identity_verified||!fileResponseIdentity(job,details.url))&&assetPii(details.url)){
+  if(!await restoreScienceDirect({id:details.tabId,url:details.url}))return;
+  ({managed={}}=await chrome.storage.local.get("managed"));job=managed[details.tabId];
+ }
  if(!job?.identity_verified||!fileResponseIdentity(job,details.url))return;
  // 临时文件链接仅保存在服务工作者内存，不写任务、配置或日志。
  capturedPdfResponses.set(transferKey(job),{url:details.url,at:Date.now()});

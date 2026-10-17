@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 MAX_PDF = 25 * 1024 * 1024
 MAX_JSON = 2 * 1024 * 1024
 # 首版仅自动下载这些公共来源；其余 OA 链接返回人工处理。
@@ -145,6 +145,28 @@ def normalize_doi(value: str) -> str:
     return value.lower()
 
 
+def sciencedirect_binding(work: dict) -> dict:
+    """只信任Crossref为同一DOI登记的出版商主文章地址，不从当前PDF猜PII。"""
+    primary = ((work.get("resource") or {}).get("primary") or {}).get("URL", "")
+    try:
+        url = urlsplit(primary)
+        if (url.scheme != "https" or url.username or url.password or url.port not in (None, 443)
+                or not str(work.get("DOI", "")).lower().startswith("10.1016/")):
+            return {}
+        pattern = (r"/retrieve/pii/(S[0-9X]{16})/?" if url.hostname == "linkinghub.elsevier.com"
+                   else r"/science/article/(?:abs/)?pii/(S[0-9X]{16})/?" if url.hostname in {"www.sciencedirect.com", "sciencedirect.com"} else None)
+        match = re.fullmatch(pattern, url.path, re.I) if pattern else None
+        if not match:
+            return {}
+        pii = match[1].upper()
+        alternatives = {str(v).upper() for v in work.get("alternative-id", []) if re.fullmatch(r"S[0-9X]{16}", str(v), re.I)}
+        if alternatives and alternatives != {pii}:
+            return {}
+        return {"publisher_pii": pii, "publisher_article_url": "https://www.sciencedirect.com/science/article/pii/" + pii}
+    except (ValueError, TypeError):
+        return {}
+
+
 def summarize(work: dict) -> dict:
     parts = (work.get("published") or {}).get("date-parts") or [[]]
     primary = ((work.get("resource") or {}).get("primary") or {}).get("URL", "")
@@ -153,7 +175,7 @@ def summarize(work: dict) -> dict:
                  if parsed.scheme == "https" and parsed.hostname == "ieeexplore.ieee.org"
                  and not parsed.username and not parsed.password
                  and re.fullmatch(r"/(?:abstract/)?document/[0-9]+/?", parsed.path) else None)
-    return {"doi": work.get("DOI"), **({"publisher_article_url": canonical} if canonical else {}),
+    return {"doi": work.get("DOI"), **({"publisher_article_url": canonical} if canonical else {}), **sciencedirect_binding(work),
             "title": (work.get("title") or [""])[0],
             "authors": [" ".join(filter(None, [a.get("given"), a.get("family"), a.get("name")]))
                         for a in work.get("author", [])],
