@@ -18,7 +18,7 @@ IEEE及ScienceDirect身份已核对的文件现在由浏览器读取PDF字节，
 
 此路径不修改Chrome全局下载偏好，不模拟点击保存，不导出登录凭据；传给本机服务的只有任务编号、触发类型及完整PDF字节，不传出版商临时URL。完整PDF、25MB上限、任务身份及最终目录均校验通过才计数。目录不可写、网页/部分PDF、网络/访问失败会停下，不暗中换回另存为，也不反复请求。其他来源仍按各自既有路径验证，不宣称全站支持。
 
-0.5.0作者实测已经自动触发IEEE下载，但仍弹保存窗口，实际任务PDF数0，因此未通过免点击验收。0.5.1新增本机直接保存、目录配置及同名保护测试；真实Chrome免点击保存仍待本人刷新扩展确认，软件检查不代替真实文件验收。扩展可用host_permissions在服务工作者内请求跨站文件，依据[Chrome官方网络请求说明](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests)。
+0.5.0实测已自动触发IEEE下载但仍弹保存窗口，因此没有记免点击通过。0.5.1已由本人普通Chrome实际完成一篇公开IEEE Access论文的无保存弹窗下载：题名文件及归档副本均存在，严格PDF解析12页、2627401字节，题名与DOI对应、两副本SHA256一致；实际来源EXTENSION_FETCH / PDF_RESPONSE。验收针对公开IEEE样例，不代表IEEE订阅、全部网站或ScienceDirect本次新路径已通过。117项离线及15组自动保存模拟另外记录，不替代真实文件核验。扩展可用host_permissions在服务工作者内请求跨站文件，依据[Chrome官方网络请求说明](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests)。
 
 ## 自动下载与本人授权
 
