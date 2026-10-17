@@ -97,8 +97,19 @@ async function startDownload(tabId,job,url,snapshot={},force=false){
   return {status:"正在下载并校验PDF"};
  }finally{transfers.delete(key);}
 }
-async function adoptCurrent(tab){
- if((assetPii(tab.url)||sdArticle(tab.url))&&await restoreScienceDirect(tab))return;
+async function adoptCurrent(tab,requestedSession=""){
+ if(assetPii(tab.url)||sdArticle(tab.url)){
+  if(await restoreScienceDirect(tab,requestedSession))return;
+  if(assetPii(tab.url)){
+   const {lastResume}=await chrome.storage.local.get("lastResume");
+   throw Error((lastResume?.summary||"论文对应尚未恢复")+"（插件"+chrome.runtime.getManifest().version+"）"+(lastResume?.code==="PII_MISMATCH"?"；预期 "+lastResume.expected_pii+"，当前 "+lastResume.observed_pii:""));
+  }
+ }
+ if(requestedSession){
+  const {tasks}=await api("/tasks");if(!tasks.some(t=>t.session_id===requestedSession))throw Error("所选任务已结束，请重新查看任务列表");
+  const {managed={}}=await chrome.storage.local.get("managed");if(managed[tab.id]?.session_id!==requestedSession)delete managed[tab.id];
+  await chrome.storage.local.set({managed,activeSessionId:requestedSession});
+ }
  if(!allowed(tab.url)&&!assetPii(tab.url))throw Error("请先完成机构认证并返回论文页面");
  const {managed={},activeSessionId}=await chrome.storage.local.get(["managed","activeSessionId"]);
  if(managed[tab.id])return;
@@ -263,7 +274,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
    if(sender.url&&!sender.url.startsWith("chrome-extension://"+chrome.runtime.id+"/"))throw Error("请在插件窗口设置目录");
    return api("/preferences",{save_directory:message.save_directory});
   }
-  if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure,lastSuccess}=await chrome.storage.local.get(["lastFailure","lastSuccess"]);return {...result,last_failure:lastFailure,last_success:lastSuccess};}
+  if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure,lastSuccess}=await chrome.storage.local.get(["lastFailure","lastSuccess"]);return {...result,...await popupTaskContext(result.tasks),last_failure:lastFailure,last_success:lastSuccess};}
   if(["chrome-ieee-inspect","chrome-ieee-enable","chrome-ieee-restore"].includes(message.action)){
    let result;
    if(message.action==="chrome-ieee-enable")result=await chromeIeeeRoute.enable(()=>api("/ieee-network-template"));
@@ -294,7 +305,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message.action==="auth"){await chrome.tabs.create({url:"https://ds.carsi.edu.cn/"});return {status:"请在CARSI选择浙江大学，并选择IEEE或Elsevier SD"};}
   if(message.action==="check"){
    await reconcileDownloads();
-   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});await adoptCurrent(tab);return checkTab(tab.id,true);
+   const [tab]=await chrome.tabs.query({active:true,currentWindow:true});await adoptCurrent(tab,message.session_id);return checkTab(tab.id,true);
   }
   if(message.action==="skip"){
    const [tab]=await chrome.tabs.query({active:true,currentWindow:true});const {managed={}}=await chrome.storage.local.get("managed"),job=managed[tab.id];if(!job)throw Error("当前不是本任务打开的论文标签");

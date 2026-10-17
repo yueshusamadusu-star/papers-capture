@@ -80,6 +80,32 @@ class BindingBridgeTests(unittest.TestCase):
             self.bridge.receive_pdf(self.data['session_id'], 0, b'%PDF-1.4\nfixture\n%%EOF', 'DOCUMENT_LINK')
             after = self.manager.directory(self.data['session_id']).joinpath('state.json').read_bytes()
             self.assertEqual(before, after)
+    def test_diagnostic_keeps_only_enumerated_non_secret_fields(self):
+        data = {'result': 'PII_MISMATCH', 'extension_version': '0.5.4', 'active_session': self.data['session_id'],
+                'expected_pii': PII, 'observed_pii': 'S0263224119306358', 'page_kind': 'SD_PDF',
+                'url': 'https://example.invalid/?signed=secret', 'cookie': 'secret', 'password': 'secret'}
+        for _ in range(12): self.bridge.extension_diagnostic(data)
+        rows = json.loads((self.manager.browser_dir/'extension-diagnostic.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(rows[-1]['expected_pii'], PII)
+        self.assertNotIn('secret', json.dumps(rows))
+        self.assertNotIn('url', rows[-1])
+        with self.assertRaises(HelperError): self.bridge.extension_diagnostic({'result': 'https://secret.invalid'})
+
+    def test_diagnostic_http_requires_capability(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(self.bridge, 'fixture-token'))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        client = build_opener(ProxyHandler({})); url = 'http://127.0.0.1:'+str(server.server_port)+'/extension-diagnostic'
+        payload = json.dumps({'result': 'POPUP', 'extension_version': '0.5.4'}).encode()
+        try:
+            with self.assertRaises(HTTPError) as caught: client.open(Request(url, data=payload))
+            self.assertEqual(caught.exception.code, 401)
+            self.assertFalse((self.manager.browser_dir/'extension-diagnostic.json').exists())
+            with client.open(Request(url, data=payload, headers={'Authorization':'Bearer fixture-token'})) as response:
+                self.assertEqual(json.load(response)['status'], 'RECORDED')
+        finally:
+            server.shutdown(); server.server_close()
+
     def test_endpoint_requires_local_capability_and_valid_pending_index(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(self.bridge, 'fixture-token'))
         threading.Thread(target=server.serve_forever, daemon=True).start()

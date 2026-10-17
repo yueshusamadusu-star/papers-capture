@@ -136,6 +136,27 @@ class RegularBridge:
             self.manager.save(state)
             return self.manager.status(sid)
 
+    def extension_diagnostic(self, data):
+        # 仅记录固定枚举和公开论文编号；原网址、签名、Cookie、输入值均不接收。
+        safe = {'observed_at': now()}
+        for key in ['active_session', 'requested_session', 'chosen_session']:
+            if re.fullmatch(r'[0-9a-f]{32}', str(data.get(key, ''))): safe[key] = data[key]
+        for key in ['expected_pii', 'observed_pii']:
+            if re.fullmatch(r'S[0-9X]{16}', str(data.get(key, ''))): safe[key] = data[key]
+        if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', str(data.get('extension_version', ''))):
+            safe['extension_version'] = data['extension_version']
+        if data.get('page_kind') in {'SD_PDF', 'SD_ARTICLE', 'OTHER'}: safe['page_kind'] = data['page_kind']
+        codes = {'POPUP', 'BOUND', 'NO_TASK', 'AMBIGUOUS_TASK', 'PII_MISMATCH', 'NO_OFFICIAL_BINDING', 'DOI_CONFLICT', 'UNRELATED_PAGE'}
+        if data.get('result') not in codes: raise HelperError('诊断代码无效')
+        safe['result'] = data['result']
+        path = self.manager.browser_dir/'extension-diagnostic.json'
+        with self.lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            prior = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else []
+            # 既有条目也按本接口产生的安全格式；最多保留8次接续检查。
+            atomic_json(path, (prior[-7:] if isinstance(prior, list) else []) + [safe])
+        return {'status': 'RECORDED'}
+
     def paper_binding(self, data):
         sid, index = data.get('session_id', ''), data.get('index')
         def selected():
@@ -267,7 +288,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.3','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.4','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
@@ -280,7 +301,7 @@ def handler_for(bridge, token):
         def do_POST(self):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
-            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes','/paper-binding'}:
+            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes','/paper-binding','/extension-diagnostic'}:
                 self.send_json(404,{'status':'NOT_FOUND'}); return
             try:
                 count=int(self.headers.get('Content-Length','0'))
@@ -292,6 +313,8 @@ def handler_for(bridge, token):
                     self.send_json(200,bridge.receive_pdf(self.headers.get('X-Papers-Session',''),int(self.headers.get('X-Papers-Index','-1')),body,self.headers.get('X-Papers-Trigger',''))); return
                 if not 0<count<=8192: raise HelperError('请求大小不合要求')
                 data=json.loads(self.rfile.read(count))
+                if self.path=='/extension-diagnostic':
+                    self.send_json(200,bridge.extension_diagnostic(data)); return
                 if self.path=='/paper-binding':
                     self.send_json(200,bridge.paper_binding(data)); return
                 if self.path=='/preferences':

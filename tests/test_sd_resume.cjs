@@ -7,8 +7,8 @@ function fixture(){
  const state={complete:false,binding:true,clicked:true,tabUrl:PDF,metadataDoi:DOI,snapshot:{doi:DOI,pdf_links:[],auth_links:[],pdf_controls:1,institution_recognized:false,password_form:false,no_access:false}};
  const paper={doi:DOI,status:'ACCESS_UNKNOWN',article_url:'https://doi.org/'+DOI};
  const chrome={storage:{local:{get:async()=>structuredClone(storage),set:async x=>Object.assign(storage,structuredClone(x)),remove:async k=>delete storage[k]}},
-  runtime:{id:'fixture',getManifest:()=>({version:'0.5.3'}),onMessage:{addListener:f=>callbacks.message=f}},action:{setBadgeText:async()=>{}},
-  tabs:{get:async id=>({id,url:state.tabUrl,status:'complete'}),onUpdated:{addListener:f=>callbacks.updated=f},onActivated:{addListener:f=>callbacks.activated=f},query:async()=>[{id:9}],create:async()=>{calls.push('create');return {id:10};}},
+  runtime:{id:'fixture',getManifest:()=>({version:'0.5.4'}),onMessage:{addListener:f=>callbacks.message=f}},action:{setBadgeText:async()=>{}},
+  tabs:{get:async id=>({id,url:state.tabUrl,status:'complete'}),onUpdated:{addListener:f=>callbacks.updated=f},onActivated:{addListener:f=>callbacks.activated=f},query:async()=>[{id:9,url:state.tabUrl}],create:async()=>{calls.push('create');return {id:10};}},
   scripting:{executeScript:async o=>{calls.push({script:o.files?.[0]});return [{result:o.func?{clicked:state.clicked}:structuredClone(state.snapshot)}];}},
   downloads:{search:async()=>[],onDeterminingFilename:{addListener:()=>{}},onChanged:{addListener:()=>{}}},
   webRequest:{onHeadersReceived:{addListener:()=>{}}}};
@@ -16,7 +16,7 @@ function fixture(){
   if(String(url).startsWith('https://')){calls.push({remote:String(url)});const r=new Response('%PDF-1.4\nfixture\n%%EOF',{headers:{'Content-Type':'application/pdf'}});Object.defineProperty(r,'url',{value:String(url)});return r;}
   const endpoint=String(url).split('/').pop(),data=options?.body&&endpoint!=='pdf-bytes'?JSON.parse(options.body):null;calls.push({endpoint,data});
   if(endpoint==='pdf-bytes'){state.complete=true;return {ok:true,json:async()=>({papers:[{status:'SAVED',title:'Fixture',file:{saved_path:'D:/论文/Fixture.pdf'}}]})};}
-  return {ok:true,json:async()=>endpoint==='paper-binding'?(state.binding?{status:'BOUND',doi:state.metadataDoi,source:'Crossref',publisher_pii:PII,publisher_article_url:ARTICLE}:{status:'UNKNOWN'}):{tasks:state.complete?[]:[{session_id:SID,current_index:0,papers:[paper]}]}};
+  return {ok:true,json:async()=>endpoint==='paper-binding'?(state.binding?{status:'BOUND',doi:state.metadataDoi,source:'Crossref',publisher_pii:PII,publisher_article_url:ARTICLE}:{status:'UNKNOWN'}):{tasks:state.complete?[]:(state.tasks||[{session_id:SID,current_index:0,papers:[paper]}])}};
  }};
  sandbox.importScripts=(...files)=>files.forEach(f=>vm.runInContext(fs.readFileSync(path.join(EXT,f),'utf8'),sandbox));vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(EXT,'background.js'),'utf8'),sandbox);
  return {storage,calls,callbacks,state,paper,invoke:(fn,...args)=>vm.runInContext(fn,sandbox)(...args)};
@@ -46,5 +46,12 @@ function fixture(){
  }
  {const f=fixture();f.state.tabUrl=ARTICLE;f.state.snapshot.doi='';await f.invoke('handleTabReady',9);assert(f.storage.managed[9].control_clicked);assert.equal(f.calls.find(x=>x.endpoint==='observe').data.identity_source,'CROSSREF_PII');checks++;}
  {const f=fixture();f.state.tabUrl=ARTICLE;await f.invoke('handleTabReady',9);assert(f.storage.managed[9].control_clicked);await f.invoke('resetArticleNavigation',9);assert.equal(f.storage.managed[9].control_clicked,false);await f.invoke('handleTabReady',9);assert(f.storage.managed[9].control_clicked);checks++;}
+ function enrolled(f,sid=SID,pii=PII){return {session_id:sid,current_index:0,papers:[{...f.paper,publisher_binding:{source:'Crossref',doi:DOI,publisher_pii:pii,publisher_article_url:ARTICLE.replace(PII,pii)}}]};}
+ {const f=fixture();f.storage.activeSessionId='c'.repeat(32);f.state.tasks=[enrolled(f)];await f.invoke('handleTabReady',9);assert(f.state.complete);assert.equal(f.storage.activeSessionId,SID);checks++;}
+ {const f=fixture();const old='c'.repeat(32);f.storage.activeSessionId=old;f.state.tasks=[enrolled(f,old,'S0263224119306358'),enrolled(f)];await f.invoke('handleTabReady',9);assert(f.state.complete);assert.equal(f.storage.managed[9].session_id,SID);checks++;}
+ {const f=fixture();f.storage.activeSessionId='c'.repeat(32);const reply=await new Promise(resolve=>f.callbacks.message({action:'check',session_id:SID},{url:'chrome-extension://fixture/popup.html'},resolve));assert.match(reply.status,/已自动保存PDF/);assert(f.state.complete);checks++;}
+ {const f=fixture();const other='c'.repeat(32);f.storage.activeSessionId='d'.repeat(32);f.state.tasks=[enrolled(f),enrolled(f,other)];assert.equal(await f.invoke('restoreScienceDirect',{id:9,url:PDF}),false);assert.equal(f.storage.lastResume.code,'AMBIGUOUS_TASK');assert.equal(f.calls.filter(x=>x.remote).length,0);assert(await f.invoke('restoreScienceDirect',{id:9,url:PDF},other));assert.equal(f.storage.managed[9].session_id,other);checks++;}
+ {const f=fixture();const old='c'.repeat(32);f.storage.activeSessionId=old;f.state.tasks=[enrolled(f,old,'S0263224119306358'),enrolled(f)];const context=await f.invoke('popupTaskContext',f.state.tasks);assert.equal(context.recommended_session_id,SID);assert.equal(context.extension_version,'0.5.4');const trace=f.calls.find(x=>x.endpoint==='extension-diagnostic');assert(trace);assert(!JSON.stringify(trace.data).includes('fixture-private'));assert(!JSON.stringify(trace.data).includes('https://'));checks++;}
+ {const f=fixture();f.state.tabUrl=PDF.replace(PII,'S0263224119306358');await assert.rejects(f.invoke('adoptCurrent',{id:9,url:f.state.tabUrl}),/预期 S0263224119306359，当前 S0263224119306358/);assert.equal(f.storage.lastResume.code,'PII_MISMATCH');assert.equal(f.calls.filter(x=>x.remote).length,0);checks++;}
  console.log(JSON.stringify({status:'PASS',checks,scope:'selected ScienceDirect identity recovery, auth return, new PDF tab; mocked Chrome/network'}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
