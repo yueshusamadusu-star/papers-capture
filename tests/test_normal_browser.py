@@ -211,6 +211,47 @@ class NormalBrowserTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close()
 
+    def test_completion_retains_automatic_transfer_provenance(self):
+        self.state["papers"][0]["native_save_required"] = True
+        self.manager.save(self.state)
+        path = self.file(b"%PDF-1.4\nfixture\n%%EOF")
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "download_path": str(path),
+                                     "download_method": "EXTENSION_REQUEST", "download_trigger": "PDF_RESPONSE"}, True)
+        paper = result["papers"][0]
+        self.assertEqual(paper["status"], "SAVED")
+        self.assertEqual(paper["browser_evidence"]["download_method"], "EXTENSION_REQUEST")
+        self.assertEqual(paper["browser_evidence"]["download_trigger"], "PDF_RESPONSE")
+        self.assertNotIn("native_save_required", paper)
+
+    def test_automatic_retry_clears_only_prior_native_fallback_flag(self):
+        self.state["papers"][0]["native_save_required"] = True
+        self.manager.save(self.state)
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "status": "DOWNLOADING",
+                                    "identity_matched": True, "download_method": "EXTENSION_REQUEST",
+                                    "download_trigger": "MATCHED_DOWNLOAD_URL"})
+        self.assertNotIn("native_save_required", result["papers"][0])
+        self.assertEqual(result["papers"][0]["browser_evidence"]["download_trigger"], "MATCHED_DOWNLOAD_URL")
+
+    def test_unknown_download_trigger_not_written(self):
+        result = self.bridge.update({"session_id": self.sid, "index": 0, "status": "DOWNLOADING",
+                                     "download_trigger": "https://private.invalid/?token=fixture"})
+        self.assertNotIn("download_trigger", result["papers"][0]["browser_evidence"])
+
+    def test_default_browser_download_root_is_allowed_only_with_task_namespace(self):
+        self.manager.browser_dir = Path(self.temp.name) / "private"
+        self.manager.browser_dir.mkdir()
+        (self.manager.browser_dir / "settings.json").write_text(json.dumps({"download_directory": str(self.downloads)}), encoding="utf-8")
+        known = Path(self.temp.name) / "system-downloads"
+        source = known / "papers-capture" / self.sid / "0.pdf"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"%PDF-1.4\nfixture\n%%EOF")
+        with patch("normal_browser.downloads_directory", return_value=known):
+            bridge = RegularBridge(self.manager)
+        result = bridge.update({"session_id": self.sid, "index": 0, "download_path": str(source),
+                                "download_method": "EXTENSION_REQUEST", "download_trigger": "PDF_RESPONSE"}, True)
+        self.assertEqual(result["actual_pdf_count"], 1)
+        self.assertTrue(source.exists())
+
     def test_wheel_extension_directory(self):
         root=Path(self.temp.name)
         installed=root/'prefix'/'share'/'papers-capture'/'browser-extension'

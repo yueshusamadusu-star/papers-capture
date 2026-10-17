@@ -56,6 +56,9 @@ class RegularBridge:
         settings=manager.browser_dir/'settings.json'
         configured=json.loads(settings.read_text(encoding='utf-8')).get('download_directory') if settings.is_file() else None
         self.download_root=Path(download_root or os.environ.get('LIT_BROWSER_DOWNLOAD_DIR') or configured or downloads_directory()).resolve()
+        self.download_roots = {self.download_root}
+        if download_root is None:
+            self.download_roots.add(downloads_directory().resolve())
         self.lock=threading.Lock()
         self.network=IeeeNetworkPolicy(manager.browser_dir)
 
@@ -82,12 +85,21 @@ class RegularBridge:
             state['current_index']=index
             if completed:
                 source=Path(data.get('download_path','')).resolve()
-                expected=self.download_root/'papers-capture'/state['session_id']
-                if source.parent!=expected or source.is_symlink() or not re.fullmatch(r'(?:'+str(index)+r'(?: \(\d+\))?\.pdf|[^\x00/\\]+\.html?)',source.name,re.I) or not source.is_file():
+                expected={root/'papers-capture'/state['session_id'] for root in self.download_roots}
+                if source.parent not in expected or source.is_symlink() or not re.fullmatch(r'(?:'+str(index)+r'(?: \(\d+\))?\.pdf|[^\x00/\\]+\.html?)',source.name,re.I) or not source.is_file():
                     raise HelperError('下载文件不在本任务专用收件目录；可设置LIT_BROWSER_DOWNLOAD_DIR匹配浏览器目录')
                 with source.open('rb') as f: body=f.read(MAX_PDF+1)
+                method = data.get('download_method')
+                trigger = data.get('download_trigger')
+                transfer = {}
+                if method in {'EXTENSION_REQUEST','BROWSER_NATIVE'}:
+                    transfer['download_method'] = method
+                if trigger in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK','READER_BUTTON'}:
+                    transfer['download_trigger'] = trigger
+                if type(data.get('extension_initiated')) is bool:
+                    transfer['extension_initiated'] = data['extension_initiated']
                 try:
-                    result=self.manager.helper._save_pdf(body,paper['doi'],{'origin':'regular_browser_extension',
+                    result=self.manager.helper._save_pdf(body,paper['doi'],{'origin':'regular_browser_extension',**transfer,
                            'paper_identity':'EXPECTED_PAPER_IDENTITY_MATCHED_BEFORE_DOWNLOAD','entitlement_evidence':'BROWSER_DOWNLOAD_COMPLETE_AND_VALID_PDF',
                            'note':'在本人正常浏览器内下载；不导出Cookie/密码，保留原下载文件'})
                 except PdfResponseError:
@@ -99,6 +111,7 @@ class RegularBridge:
                         paper['reason']='下载结果不是完整PDF，可能为预览/登录/验证页；未计入全文'
                 else:
                     paper['status'],paper['file']=result['status'],result
+                    paper.setdefault('browser_evidence',{}).update(transfer)
                     paper.pop('reason',None)
                     paper.pop('native_save_required',None)
                     paper.get('browser_evidence',{}).pop('failure_code',None)
@@ -125,6 +138,10 @@ class RegularBridge:
                 elif observed=='DOWNLOADING':paper.pop('reason',None)
                 if data.get('download_method') in {'EXTENSION_REQUEST','BROWSER_NATIVE'}:
                     paper['browser_evidence']['download_method']=data['download_method']
+                    if observed == 'DOWNLOADING' and data['download_method'] == 'EXTENSION_REQUEST':
+                        paper.pop('native_save_required', None)
+                if data.get('download_trigger') in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK','READER_BUTTON'}:
+                    paper['browser_evidence']['download_trigger']=data['download_trigger']
             pending=[i for i,p in enumerate(state['papers']) if p['status'] not in TERMINAL]
             state['status']='FINISHED' if not pending else paper['status']
             state['current_index']=pending[0] if pending else None
@@ -152,7 +169,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.4.6','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.0','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':

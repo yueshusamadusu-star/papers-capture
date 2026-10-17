@@ -1,5 +1,5 @@
 "use strict";
-importScripts("chrome_ieee.js");
+importScripts("chrome_ieee.js","auto_pdf.js");
 const ORIGIN="http://127.0.0.1:8766";
 const domains=["sciencedirect.com","elsevier.com","ieee.org","scitepress.org","mdpi.com","mdpi-res.com","arxiv.org","ncbi.nlm.nih.gov","springer.com","springerlink.com","nature.com","wiley.com","tandfonline.com","acm.org","cambridge.org","oup.com","sagepub.com","iop.org","aps.org","aip.org"];
 const allowed=value=>{try{const u=new URL(value);return u.protocol==="https:"&&!u.username&&!u.password&&domains.some(d=>u.hostname===d||u.hostname.endsWith("."+d));}catch{return false;}};
@@ -9,7 +9,13 @@ const articlePii=value=>{try{return new URL(value).pathname.match(/\/pii\/(S[0-9
 const assetPii=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="pdf.sciencedirectassets.com"||u.username||u.password)return "";const id=u.pathname.match(/\/1-s2\.0-(S[0-9X]{16})\/main\.pdf$/i)?.[1]?.toUpperCase()||"";return u.searchParams.has("pii")&&u.searchParams.get("pii").toUpperCase()!==id?"":id;}catch{return "";}};
 const doi=value=>String(value||"").trim().replace(/^doi:\s*/i,"").replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,"").toLowerCase();
 const validDoi=value=>/^10\.\d{4,9}\/\S+$/i.test(doi(value));
-const ieeeArticleId=value=>{try{const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="ieeexplore.ieee.org"||u.username||u.password)return "";return u.pathname.match(/^\/(?:abstract\/)?document\/([0-9]+)\/?$/)?.[1]||(/^\/(?:stamp\/stamp\.jsp|stampPDF\/getPDF\.jsp)$/i.test(u.pathname)&&/^[0-9]+$/.test(u.searchParams.get("arnumber")||"")?u.searchParams.get("arnumber"):"");}catch{return "";}};
+const ieeeArticleId=value=>{try{
+ const u=new URL(value);if(u.protocol!=="https:"||u.hostname!=="ieeexplore.ieee.org"||u.username||u.password)return "";
+ const file=u.pathname.match(/^\/iel(?:x)?7\/[0-9]+\/[0-9]+\/([0-9]+)\.pdf$/i)?.[1];
+ const id=u.pathname.match(/^\/(?:abstract\/)?document\/([0-9]+)\/?$/)?.[1]||file?.replace(/^0+(?=[0-9])/,"")||
+  (/^\/(?:stamp\/stamp\.jsp|stampPDF\/getPDF\.jsp)$/i.test(u.pathname)&&/^[0-9]+$/.test(u.searchParams.get("arnumber")||"")?u.searchParams.get("arnumber"):"");
+ return id&&u.searchParams.getAll("arnumber").every(n=>/^[0-9]+$/.test(n)&&n.replace(/^0+(?=[0-9])/,"")===id)?id:"";
+}catch{return "";}};
 const ieeeArticlePage=value=>{try{return /^\/(?:abstract\/)?document\/[0-9]+\/?$/.test(new URL(value).pathname)&&Boolean(ieeeArticleId(value));}catch{return false;}};
 const checking=new Set(),completing=new Set(),opening=new Set(),transfers=new Set();
 const failureMessages={DOWNLOAD_SECURITY:"网站拦下了扩展下载；请在已打开PDF的阅读器点下载",NOT_PDF:"网站返回了网页，尚未取得论文PDF",LOCAL_API:"本机接续或下载目录校验失败",BROWSER_OPERATION:"浏览器操作失败，请返回原论文页再检查"};
@@ -27,7 +33,7 @@ async function api(path,data){
  if(!response.ok)throw Error("本机接续未完成，请查看任务状态或下载目录设置");return response.json();
 }
 async function progress(job,status,identity=false,s={}){return api("/observe",{session_id:job.session_id,index:job.index,status,identity_matched:identity,
- institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{}),...(s.download_method?{download_method:s.download_method}:{}),...((s.identity_source||job.identity_source)?{identity_source:s.identity_source||job.identity_source}:{})});}
+ institution_recognized:Boolean(s.institution_recognized),visible_auth_form:Boolean(s.password_form),pdf_candidates:s.pdf_links?.length||0,extension_version:chrome.runtime.getManifest().version,...(s.failure_code?{failure_code:s.failure_code}:{}),...(s.download_method?{download_method:s.download_method}:{}),...(s.download_trigger?{download_trigger:s.download_trigger}:{}),...((s.identity_source||job.identity_source)?{identity_source:s.identity_source||job.identity_source}:{})});}
 async function openNext(sessionId){
  if(opening.has(sessionId))return {status:"OPENING"};opening.add(sessionId);
  try{
@@ -64,13 +70,13 @@ async function clickArticlePdf(tabId,expected){
  }});return results[0]?.result?.clicked===true;
 }
 async function startDownload(tabId,job,url,snapshot={},force=false){
- const key=job.session_id+":"+job.index,asset=assetPii(url),signature=asset?"resolved:"+asset:url;
+ const key=job.session_id+":"+job.index,asset=assetPii(url),ieee=ieeeArticleId(url),signature=asset?"resolved:"+asset:ieee?"ieee-file:"+ieee:url;
  if(asset&&asset!==(job.expected_pii||articlePii(job.article_page)))return {status:"最终PDF与原论文身份不一致，未下载"};
  if(transfers.has(key)||(!force&&job.attempted===signature))return {status:"等待下载结果"};
  transfers.add(key);
  try{
-  job.attempted=signature;const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
-  await progress(job,"DOWNLOADING",true,{...snapshot,download_method:"EXTENSION_REQUEST"});
+  job.attempted=signature;job.transfer_method="EXTENSION_REQUEST";job.download_trigger=snapshot.download_trigger||"DOCUMENT_LINK";const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
+  await progress(job,"DOWNLOADING",true,{...snapshot,download_method:"EXTENSION_REQUEST",download_trigger:job.download_trigger});
   const id=await chrome.downloads.download({url,filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify",saveAs:false});
   const {downloads={}}=await chrome.storage.local.get("downloads");downloads[id]=job;await chrome.storage.local.set({downloads});
   const items=await chrome.downloads.search({id});if(items[0]?.state==="complete")await completedDownload(id);
@@ -98,6 +104,7 @@ async function checkTab(tabId,force=false){
  try{
   const {managed={}}=await chrome.storage.local.get("managed"),job=managed[tabId];if(!job)return {status:"NOT_TRACKED"};
   const tab=await chrome.tabs.get(tabId);
+  if(job.auto_pdf_started||autoPdfStarting.has(transferKey(job)))return {status:"正在自动下载并校验PDF"};
   // 为升级前已打开的任务补上已登记的出版方文章编号，不从当前页面猜对应。
   if(!job.ieee_article_id&&ieeeArticleId(tab.url)){
    const {tasks}=await api("/tasks"),paper=tasks.find(t=>t.session_id===job.session_id)?.papers[job.index];
@@ -148,9 +155,11 @@ async function checkTab(tabId,force=false){
    return startDownload(tabId,job,pdf,s,force);
   }
   if(viewer&&job.ieee_article_id&&!pdf&&!s.no_access&&!s.password_form){
+   const automatic=await retryKnownIeeeFile(tabId,job);if(automatic)return automatic;
+   if(autoPdfStarting.has(transferKey(job)))return {status:"正在自动下载并校验PDF"};
    job.native_until=Date.now()+600000;managed[tabId]=job;await chrome.storage.local.set({managed});
    await progress(job,"NEED_BROWSER_SAVE",true,s);
-   return {status:"若已能看见完整PDF，请点阅读器下载按钮，工具接收归档；若页面报418，先核对IEEE直连"};
+   return {status:"已进入PDF预览，正在等待识别文件响应；尚未自动保存。若需人工保存会明确提示"};
   }
   if(s.institution_recognized&&s.no_access){await progress(job,"SKIPPED_NO_ACCESS",true,s);await openNext(job.session_id);return {status:"本篇无权限，已退避"};}
   const status=s.password_form||s.auth_links.length||s.no_access?"NEED_USER_AUTHENTICATION":"ACCESS_UNKNOWN";
@@ -162,10 +171,14 @@ async function completedDownload(id){
  try{
   const {downloads={}}=await chrome.storage.local.get("downloads"),job=downloads[id];if(!job)return;
   const items=await chrome.downloads.search({id}),item=items[0];if(!item)return;
-  if(item.state==="interrupted"){await progress(job,"DOWNLOAD_ERROR",true);delete downloads[id];await chrome.storage.local.set({downloads});return;}
+  if(item.state==="interrupted"){await stopAutomaticTransfer(job);await progress(job,"DOWNLOAD_ERROR",true);delete downloads[id];await chrome.storage.local.set({downloads});return;}
   if(item.state!=="complete")return;
-  const state=await api("/complete",{session_id:job.session_id,index:job.index,download_path:item.filename});delete downloads[id];await chrome.storage.local.set({downloads});
-  if(["SAVED","ALREADY_EXISTS"].includes(state.papers[job.index].status)){await clearFailure();await openNext(job.session_id);}
+  if(item.byExtensionId===chrome.runtime.id)job.transfer_method="EXTENSION_REQUEST";
+  let state;
+  try{state=await api("/complete",{session_id:job.session_id,index:job.index,download_path:item.filename,download_method:job.transfer_method,download_trigger:job.download_trigger,...(item.byExtensionId?{extension_initiated:item.byExtensionId===chrome.runtime.id}:{})});}
+  catch{await stopAutomaticTransfer(job);await reportFailure("LOCAL_API",job);return;}
+  delete downloads[id];await chrome.storage.local.set({downloads});await stopAutomaticTransfer(job);
+  if(["SAVED","ALREADY_EXISTS"].includes(state.papers[job.index].status)){await chrome.storage.local.set({lastSuccess:{summary:(job.transfer_method==="EXTENSION_REQUEST"?"自动下载并校验保存":"接收本人保存并归档")+"："+(state.papers[job.index].title||job.doi)}});await clearFailure();await openNext(job.session_id);}
   else await reportFailure(state.papers[job.index].native_save_required?"DOWNLOAD_SECURITY":"NOT_PDF",job);
  }finally{completing.delete(id);}
 }
@@ -189,7 +202,9 @@ async function nativeDownloadJob(item){
 }
 chrome.downloads.onDeterminingFilename.addListener((item,suggest)=>{
  (async()=>{
+  if(item.byExtensionId&&item.byExtensionId===chrome.runtime.id){suggest();return;}
   const job=await nativeDownloadJob(item);if(!job){suggest();return;}
+  job.transfer_method="BROWSER_NATIVE";job.download_trigger="READER_BUTTON";
   if(/^text\/html/i.test(item.mime||"")){await chrome.downloads.cancel(item.id);await reportFailure("DOWNLOAD_SECURITY",job);suggest();return;}
   const {downloads={}}=await chrome.storage.local.get("downloads");downloads[item.id]=job;await chrome.storage.local.set({downloads});
   await progress(job,"DOWNLOADING",true,{download_method:"BROWSER_NATIVE"});suggest({filename:`papers-capture/${job.session_id}/${job.index}.pdf`,conflictAction:"uniquify"});
@@ -208,7 +223,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
    if(!sender.url?.startsWith(ORIGIN+"/pair")||!/^[-_a-zA-Z0-9]{40,60}$/.test(message.token||""))throw Error("配对来源无效");
    await chrome.storage.local.set({token:message.token});await api("/health");return {status:"PAIRED"};
   }
-  if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure}=await chrome.storage.local.get("lastFailure");return {...result,last_failure:lastFailure};}
+  if(message.action==="tasks"){const result=await api("/tasks");const {lastFailure,lastSuccess}=await chrome.storage.local.get(["lastFailure","lastSuccess"]);return {...result,last_failure:lastFailure,last_success:lastSuccess};}
   if(["chrome-ieee-inspect","chrome-ieee-enable","chrome-ieee-restore"].includes(message.action)){
    let result;
    if(message.action==="chrome-ieee-enable")result=await chromeIeeeRoute.enable(()=>api("/ieee-network-template"));
