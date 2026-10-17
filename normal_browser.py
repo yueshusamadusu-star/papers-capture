@@ -15,6 +15,8 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from urllib.request import Request, build_opener, ProxyHandler
 import webbrowser
 
@@ -119,13 +121,15 @@ class RegularBridge:
         paper.pop('reason',None);paper.pop('native_save_required',None)
         paper.get('browser_evidence',{}).pop('failure_code',None)
 
-    def receive_pdf(self, sid, index, body, trigger):
+    def receive_pdf(self, sid, index, body, trigger, attempt_id=''):
         with self.lock:
             state=self.manager.load(sid)
             if state.get('backend')!='regular_extension' or state['status']=='CLOSED' or type(index) is not int or not 0<=index<len(state['papers']):
                 raise HelperError('未授权任务')
             paper=state['papers'][index]
             if paper['status'] in TERMINAL: return self.manager.status(sid)
+            if paper.get('active_attempt', {}).get('id') and attempt_id != paper['active_attempt']['id']:
+                raise HelperError('旧下载尝试，不接收文件')
             if paper['status']!='DOWNLOADING' or paper.get('browser_evidence',{}).get('identity_matched') is not True:
                 raise HelperError('缺少当前论文身份核对')
             if trigger not in {'PDF_RESPONSE','MATCHED_DOWNLOAD_URL','DOCUMENT_LINK'}: raise HelperError('触发来源无效')
@@ -135,6 +139,39 @@ class RegularBridge:
             state['current_index']=pending[0] if pending else None
             self.manager.save(state)
             return self.manager.status(sid)
+
+    def download_attempt(self, data):
+        with self.lock:
+            sid, index = data.get('session_id', ''), data.get('index')
+            state = self.manager.load(sid)
+            if (state.get('backend') != 'regular_extension' or state['status'] == 'CLOSED'
+                    or type(index) is not int or not 0 <= index < len(state['papers'])):
+                raise HelperError('任务或论文无效')
+            paper = state['papers'][index]
+            if paper['status'] in TERMINAL: return {'status': 'FINISHED'}
+            current = paper.get('active_attempt', {})
+            action = data.get('action')
+            if action == 'begin':
+                if current.get('id') and paper['status'] == 'DOWNLOADING':
+                    age = (datetime.now(timezone.utc)-datetime.fromisoformat(current['started_at'])).total_seconds()
+                    if age < 90: return {'status': 'BUSY', 'attempt': current}
+                current = {'id': uuid.uuid4().hex, 'started_at': now(), 'link_refreshes': 0}
+                paper['active_attempt'] = current
+            elif action == 'refresh-link':
+                if not current.get('id') or current['id'] != data.get('attempt_id'): raise HelperError('旧尝试不能刷新链接')
+                if current.get('link_refreshes', 0) >= 1: return {'status': 'EXHAUSTED'}
+                binding = paper.get('publisher_binding', {})
+                safe = sciencedirect_binding({'DOI': paper['doi'], 'resource': {'primary': {'URL': binding.get('publisher_article_url', '')}}})
+                if binding.get('source') != 'Crossref' or normalize_doi(binding.get('doi', '')) != normalize_doi(paper['doi']) or safe.get('publisher_pii') != binding.get('publisher_pii') or not safe:
+                    raise HelperError('缺少可返回的官方论文登记')
+                current['link_refreshes'] = 1
+            else: raise HelperError('尝试操作无效')
+            paper['status'] = 'ACCESS_UNKNOWN'
+            paper.pop('reason', None)
+            state['status'] = 'ACCESS_UNKNOWN'
+            state['current_index'] = index
+            self.manager.save(state)
+            return {'status': 'READY', 'attempt': current, **({'article_url': safe['publisher_article_url']} if action == 'refresh-link' else {})}
 
     def extension_diagnostic(self, data):
         # 仅记录固定枚举和公开论文编号；原网址、签名、Cookie、输入值均不接收。
@@ -147,6 +184,12 @@ class RegularBridge:
             safe['extension_version'] = data['extension_version']
         if data.get('page_kind') in {'SD_PDF', 'SD_ARTICLE', 'OTHER'}: safe['page_kind'] = data['page_kind']
         codes = {'POPUP', 'BOUND', 'NO_TASK', 'AMBIGUOUS_TASK', 'PII_MISMATCH', 'NO_OFFICIAL_BINDING', 'DOI_CONFLICT', 'UNRELATED_PAGE'}
+        codes |= {'TRANSFER_STARTED','TRANSFER_HTTP','TRANSFER_FAILED','TRANSFER_SAVED','LINK_REFRESH','WAIT_DUPLICATE'}
+        if data.get('phase') in {'FETCH','BODY','LOCAL','DONE','RENEW'}: safe['phase'] = data['phase']
+        if type(data.get('http_status')) is int and 100 <= data['http_status'] <= 599: safe['http_status'] = data['http_status']
+        if data.get('mime_kind') in {'PDF','HTML','BINARY','OTHER','UNKNOWN'}: safe['mime_kind'] = data['mime_kind']
+        if data.get('link_state') in {'EXPIRED','LIVE','UNKNOWN'}: safe['link_state'] = data['link_state']
+        if data.get('reason') in {'HTTP_ERROR','NETWORK','TIMEOUT','FINAL_IDENTITY','MIME_NOT_PDF','PDF_INCOMPLETE','SIZE_LIMIT','LOCAL_REJECTED','MISSING_PAIRING','SIGNED_URL_EXPIRED'}: safe['reason'] = data['reason']
         if data.get('result') not in codes: raise HelperError('诊断代码无效')
         safe['result'] = data['result']
         path = self.manager.browser_dir/'extension-diagnostic.json'
@@ -208,6 +251,14 @@ class RegularBridge:
                 raise HelperError('论文序号无效')
             paper=state['papers'][index]
             if paper['status'] in TERMINAL:
+                return self.manager.status(state['session_id'])
+            attempt = paper.get('active_attempt', {}).get('id')
+            if attempt and data.get('attempt_id') != attempt:
+                if completed: raise HelperError('旧尝试文件不导入')
+                return self.manager.status(state['session_id'])
+            if (not completed and paper['status'] == 'DOWNLOADING'
+                    and data.get('status') in {'ACCESS_UNKNOWN', 'NEED_USER_AUTHENTICATION', 'CHALLENGE_REQUIRED'}
+                    and not data.get('failure_code')):
                 return self.manager.status(state['session_id'])
             state['current_index']=index
             if completed:
@@ -288,7 +339,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.4','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.5','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
@@ -301,7 +352,7 @@ def handler_for(bridge, token):
         def do_POST(self):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
-            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes','/paper-binding','/extension-diagnostic'}:
+            if self.path not in {'/observe','/complete','/ieee-network','/ieee-browser-diagnostic','/preferences','/pdf-bytes','/paper-binding','/extension-diagnostic','/download-attempt'}:
                 self.send_json(404,{'status':'NOT_FOUND'}); return
             try:
                 count=int(self.headers.get('Content-Length','0'))
@@ -310,9 +361,11 @@ def handler_for(bridge, token):
                     self.connection.settimeout(30)
                     body=self.rfile.read(count)
                     if len(body)!=count: raise HelperError('文件传输不完整')
-                    self.send_json(200,bridge.receive_pdf(self.headers.get('X-Papers-Session',''),int(self.headers.get('X-Papers-Index','-1')),body,self.headers.get('X-Papers-Trigger',''))); return
+                    self.send_json(200,bridge.receive_pdf(self.headers.get('X-Papers-Session',''),int(self.headers.get('X-Papers-Index','-1')),body,self.headers.get('X-Papers-Trigger',''),self.headers.get('X-Papers-Attempt',''))); return
                 if not 0<count<=8192: raise HelperError('请求大小不合要求')
                 data=json.loads(self.rfile.read(count))
+                if self.path=='/download-attempt':
+                    self.send_json(200,bridge.download_attempt(data)); return
                 if self.path=='/extension-diagnostic':
                     self.send_json(200,bridge.extension_diagnostic(data)); return
                 if self.path=='/paper-binding':

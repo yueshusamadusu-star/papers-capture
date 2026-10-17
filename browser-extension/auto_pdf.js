@@ -1,7 +1,7 @@
 "use strict";
 // 仅处理本人已选任务中、身份已核对的IEEE/ScienceDirect文件响应。
 const capturedPdfResponses=new Map(),autoPdfStarting=new Set();
-const transferKey=job=>job.session_id+":"+job.index;
+const transferKey=job=>job.session_id+":"+job.index+(job.attempt_id?":"+job.attempt_id:"");
 function fileResponseIdentity(job,url){
  if(job.ieee_article_id)return ieeeArticleId(url)===job.ieee_article_id;
  if(aipFileIdentity(job,url))return true;
@@ -10,16 +10,22 @@ function fileResponseIdentity(job,url){
 }
 async function autoPdfAllowed(job){
  const {tasks}=await api("/tasks"),paper=tasks.find(t=>t.session_id===job.session_id)?.papers[job.index];
- return Boolean(paper&&!['SAVED','ALREADY_EXISTS','SKIPPED_NO_ACCESS','SKIPPED_BY_USER'].includes(paper.status)&&paper.browser_evidence?.failure_code!=="DOWNLOAD_SECURITY");
+ return Boolean(paper&&(!paper.active_attempt?.id||paper.active_attempt.id===job.attempt_id)&&!['SAVED','ALREADY_EXISTS','SKIPPED_NO_ACCESS','SKIPPED_BY_USER'].includes(paper.status)&&paper.browser_evidence?.failure_code!=="DOWNLOAD_SECURITY");
 }
 async function beginObservedPdf(tabId,job,url,trigger){
  const key=transferKey(job);
  if(autoPdfStarting.has(key)||job.auto_pdf_started)return {status:"正在自动下载并校验PDF"};
- if(job.auto_pdf_attempted)return {status:"本次自动下载已尝试，保留结果而不循环请求"};
+ if(job.auto_pdf_attempted){await recordTransfer(job,"WAIT_DUPLICATE",{phase:"FETCH"});return {status:"本次自动下载已尝试，保留结果而不循环请求"};}
  if(!job.identity_verified||!fileResponseIdentity(job,url))return {status:"文件身份尚未匹配，未发起下载"};
  autoPdfStarting.add(key);
  try{
   if(!await autoPdfAllowed(job))return {status:"当前任务无需下载或需本人处理网站验证"};
+  if(job.attempt_id){
+   const {pdfAttempts={}}=await chrome.storage.local.get("pdfAttempts");
+   if(pdfAttempts[job.attempt_id]){await recordTransfer(job,"WAIT_DUPLICATE",{phase:"FETCH"});return {status:"本次下载已处理，等待结果；开始接续可建立新尝试"};}
+   pdfAttempts[job.attempt_id]=true;
+   const entries=Object.entries(pdfAttempts).slice(-20);await chrome.storage.local.set({pdfAttempts:Object.fromEntries(entries)});
+  }
   job.auto_pdf_started=true;job.auto_pdf_attempted=true;
   const {managed={}}=await chrome.storage.local.get("managed");managed[tabId]=job;await chrome.storage.local.set({managed});
   return await startDownload(tabId,job,url,{download_trigger:trigger});

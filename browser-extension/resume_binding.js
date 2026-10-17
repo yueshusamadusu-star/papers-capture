@@ -5,7 +5,7 @@ const restoringTabs=new Map();
 function paperJob(session,index,paper){
  const binding=paper.publisher_binding;
  const trusted=binding?.source==="Crossref"&&doi(binding.doi)===doi(paper.doi)&&/^S[0-9X]{16}$/.test(binding.publisher_pii||"");
- return {session_id:session,index,doi:paper.doi,attempted:"",ieee_article_id:ieeeArticleId(paper.publisher_article_url||paper.article_url),
+ return {session_id:session,index,doi:paper.doi,attempt_id:paper.active_attempt?.id||"",attempted:"",ieee_article_id:ieeeArticleId(paper.publisher_article_url||paper.article_url),
   ...(trusted?{expected_pii:binding.publisher_pii,article_page:binding.publisher_article_url}: {})};
 }
 function pendingIndex(task){return Number.isInteger(task.current_index)?task.current_index:task.papers.findIndex(p=>!terminalPaper(p));}
@@ -50,7 +50,7 @@ async function restoreScienceDirect(tab,requestedSession=""){
   const index=pendingIndex(task),paper=task.papers[index];if(!paper||terminalPaper(paper))return reject("NO_TASK");
   const pii=assetPii(tab.url)||articlePii(tab.url),old=managed[tab.id],session=task.session_id;
   let job=paperJob(session,index,paper);
-  const parent=Object.values(managed).find(j=>j.session_id===session&&j.index===index&&doi(j.doi)===doi(paper.doi)&&j.identity_verified&&(j.expected_pii||articlePii(j.article_page))===pii);
+  const parent=Object.values(managed).find(j=>j.session_id===session&&j.index===index&&(j.attempt_id||"")===(paper.active_attempt?.id||"")&&doi(j.doi)===doi(paper.doi)&&j.identity_verified&&(j.expected_pii||articlePii(j.article_page))===pii);
   if(!job.expected_pii&&parent)job={...parent};
   if(!job.expected_pii){
    const binding=await api("/paper-binding",{session_id:session,index});
@@ -63,7 +63,7 @@ async function restoreScienceDirect(tab,requestedSession=""){
    const snapshot=await inspect(tab.id);
    if(validDoi(snapshot?.doi)&&doi(snapshot.doi)!==doi(paper.doi))return reject("DOI_CONFLICT");
   }
-  if(old&&old.session_id===session&&old.index===index)job={...old,...job,attempted:old.attempted||""};
+  if(old&&old.session_id===session&&old.index===index&&(old.attempt_id||"")===job.attempt_id)job={...old,...job,attempted:old.attempted||""};
   job.identity_verified=true;job.identity_source=job.identity_source||"CROSSREF_PII";
   const latest=await chrome.storage.local.get("managed");
   latest.managed=latest.managed||{};latest.managed[tab.id]=job;await chrome.storage.local.set({managed:latest.managed,activeSessionId:session});
@@ -82,4 +82,10 @@ async function resetArticleNavigation(tabId){
  if(!managed[tabId])return;
  managed[tabId].control_clicked=false;delete managed[tabId].control_context;
  await chrome.storage.local.set({managed});
+}
+
+async function beginSelectedAttempt(job){
+ const key=job.session_id+":"+job.index;
+ if(transfers.has(key))return {status:"BUSY"};
+ return api("/download-attempt",{session_id:job.session_id,index:job.index,action:"begin"});
 }
