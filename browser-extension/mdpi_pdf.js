@@ -5,7 +5,7 @@ function mdpiArticleRecord(value){
   const u=new URL(value);
   if(u.protocol!=="https:"||u.port||u.username||u.password||!["mdpi.com","www.mdpi.com"].includes(u.hostname))return null;
   const m=u.pathname.match(/^\/(\d{4}-\d{3}[\dX])\/([1-9]\d{0,4})\/([1-9]\d{0,3})\/([1-9]\d{0,6})(?:\/pdf)?\/?$/i);
-  return m?{path:"/"+m.slice(1).join("/"),volume:m[2],issue:m[3],number:m[4]}:null;
+  return m?{path:"/"+m.slice(1).join("/"),issn:m[1],volume:m[2],issue:m[3],number:m[4]}:null;
  }catch{return null;}
 }
 function mdpiPdfLocation(value){
@@ -17,9 +17,19 @@ function mdpiBinding(job){
  if(!job.identity_verified)return null;
  const record=mdpiArticleRecord(job.article_page);
  if(!record||!/^10\.3390\//.test(doi(job.doi)))return null;
- const tail=record.volume+record.issue.padStart(2,"0")+record.number.padStart(4,"0"),suffix=doi(job.doi).slice(8);
- if(!suffix.endsWith(tail))return null;
- const journal=suffix.slice(0,-tail.length);if(!/^[a-z][a-z0-9]*$/.test(journal))return null;
+ const stem=record.volume+record.issue.padStart(2,"0"),suffix=doi(job.doi).slice(8);
+ let journal;
+ if(record.issn==="1424-8220"){
+  // Sensors旧DOI起始页补至五位，新文章号常补至四位；文件目录始终用sensors。
+  if(![4,5].some(width=>suffix==="s"+stem+record.number.padStart(width,"0")))return null;
+  journal="sensors";
+ }else{
+  const tail=stem+record.number.padStart(4,"0");
+  if(!suffix.endsWith(tail))return null;
+  journal=suffix.slice(0,-tail.length);
+  // 短前缀s仅在已知Sensors ISSN下接受，不推测其他期刊别名。
+  if(!/^[a-z][a-z0-9]*$/.test(journal)||journal==="s")return null;
+ }
  return {...record,journal,slug:journal+"-"+record.volume.padStart(2,"0")+"-"+record.number.padStart(5,"0")};
 }
 function mdpiFileIdentity(job,value){

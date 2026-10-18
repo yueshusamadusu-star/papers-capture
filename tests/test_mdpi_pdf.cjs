@@ -3,14 +3,15 @@ const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),asse
 const EXT=path.join(__dirname,'../browser-extension'),SID='a'.repeat(32),ATTEMPT='e'.repeat(32),DOI='10.3390/metrology5040071';
 const PAGE='https://www.mdpi.com/2673-8244/5/4/71',PDF_URL=PAGE+'/pdf',CDN='https://mdpi-res.com/d_attachment/metrology/metrology-05-00071/article_deploy/metrology-05-00071.pdf';
 const PDF=new TextEncoder().encode('%PDF-1.4\nfixture\n%%EOF');
-function fixture(){
- const paper={doi:DOI,title:'MDPI Fixture',article_url:PAGE,status:'ACCESS_UNKNOWN',active_attempt:{id:ATTEMPT}};
- const job={session_id:SID,index:0,doi:DOI,attempt_id:ATTEMPT,identity_verified:true,article_page:PAGE};
+function fixture(options={}){
+ const {doi:paperDoi=DOI,page=PAGE,cdn=CDN}=options;
+ const paper={doi:paperDoi,title:'MDPI Fixture',article_url:page,status:'ACCESS_UNKNOWN',active_attempt:{id:ATTEMPT}};
+ const job={session_id:SID,index:0,doi:paperDoi,attempt_id:ATTEMPT,identity_verified:true,article_page:page};
  const storage={token:'fixture-token',activeSessionId:SID,managed:{7:job}},calls=[],callbacks={};
- const state={tabUrl:PAGE,status:200,mime:'application/pdf',body:PDF,finalUrl:CDN+'?version=fixture-private',complete:false,papers:[paper],
-  snapshot:{doi:DOI,pdf_links:[PDF_URL],auth_links:[],viewer_pdf_links:[],password_form:false,no_access:false,challenge:false}};
+ const state={tabUrl:page,status:200,mime:'application/pdf',body:PDF,finalUrl:cdn+'?version=fixture-private',complete:false,papers:[paper],
+  snapshot:{doi:paperDoi,pdf_links:[page+'/pdf'],auth_links:[],viewer_pdf_links:[],password_form:false,no_access:false,challenge:false}};
  const chrome={storage:{local:{get:async()=>structuredClone(storage),set:async v=>Object.assign(storage,structuredClone(v)),remove:async k=>{delete storage[k];}}},
-  runtime:{id:'fixture-extension',getManifest:()=>({version:'0.5.7'}),onMessage:{addListener:f=>{callbacks.message=f;}}},action:{setBadgeText:async()=>{}},
+  runtime:{id:'fixture-extension',getManifest:()=>({version:'0.5.8'}),onMessage:{addListener:f=>{callbacks.message=f;}}},action:{setBadgeText:async()=>{}},
   tabs:{get:async id=>({id,url:state.tabUrl,status:id===11?'loading':'complete'}),query:async()=>[{id:7}],create:async opts=>{calls.push({create:opts});return {id:11};},
    onUpdated:{addListener:f=>{callbacks.updated=f;}},onActivated:{addListener:()=>{}}},
   downloads:{download:async opts=>{calls.push({nativeDownload:opts});return 20;},search:async()=>[],onChanged:{addListener:()=>{}},onDeterminingFilename:{addListener:()=>{}}},
@@ -48,5 +49,18 @@ function fixture(){
  {const f=fixture();f.state.mime=undefined;f.state.body=new Uint8Array();await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.match(f.storage.lastFailure.summary,/空内容/);const failure=f.calls.find(c=>c.data?.result==='TRANSFER_FAILED').data;assert.equal(failure.body_bytes,0);assert.equal(failure.body_kind,'EMPTY');checks++;}
  {const f=fixture();f.state.mime=undefined;f.state.body=new TextEncoder().encode('%PDF-1.4\ntruncated');await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.match(f.storage.lastFailure.summary,/不完整/);assert.equal(f.calls.filter(c=>c.api==='pdf-bytes').length,0);checks++;}
  {const f=fixture();f.state.mime=undefined;f.state.body=new TextEncoder().encode('unrecognized fixture content');await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.match(f.storage.lastFailure.summary,/不是PDF/);const failure=f.calls.find(c=>c.data?.result==='TRANSFER_FAILED').data;assert.equal(failure.reason,'NOT_PDF_CONTENT');assert.equal(failure.body_kind,'OTHER');checks++;}
+ // Sensors旧起始页DOI与现代文章号：只接受已核对的ISSN和精确文件路径。
+ const sensors={doi:'10.3390/s140406828',page:'https://www.mdpi.com/1424-8220/14/4/6828',cdn:'https://mdpi-res.com/d_attachment/sensors/sensors-14-06828/article_deploy/sensors-14-06828.pdf'};
+ const modern={doi:'10.3390/s17122832',page:'https://www.mdpi.com/1424-8220/17/12/2832',cdn:'https://mdpi-res.com/d_attachment/sensors/sensors-17-02832/article_deploy/sensors-17-02832.pdf'};
+ {for(const host of ['www.mdpi.com','mdpi.com']){const f=fixture({...sensors,page:sensors.page.replace('www.mdpi.com',host)});const b=await f.invoke('mdpiBinding',f.job);assert.equal(b.issn,'1424-8220');assert.equal(b.journal,'sensors');assert.equal(b.slug,'sensors-14-06828');}checks++;}
+ {const f=fixture(modern);assert.equal((await f.invoke('mdpiBinding',f.job)).slug,'sensors-17-02832');checks++;}
+ {const f=fixture(sensors);for(const job of [{...f.job,identity_verified:false},{...f.job,doi:'10.3390/s140406829'},{...f.job,doi:'10.3390/s140506828'},{...f.job,doi:'10.3390/metrology140406828'},{...f.job,article_page:sensors.page.replace('/14/','/15/')},{...f.job,article_page:sensors.page.replace('/4/','/5/')},{...f.job,article_page:sensors.page.replace('6828','6829')},{...f.job,article_page:sensors.page.replace('1424-8220','1420-3049')}])assert.equal(await f.invoke('mdpiBinding',job),null);checks++;}
+ {const f=fixture(sensors);for(const url of [sensors.page+'/pdf',sensors.page.replace('www.mdpi.com','mdpi.com')+'/pdf',sensors.cdn,sensors.cdn+'?version=123'])assert.equal(await f.invoke('mdpiFileIdentity',f.job,url),true);
+  for(const url of [sensors.cdn.replace('/sensors/','/s/'),sensors.cdn.replaceAll('06828','06829'),sensors.cdn.replaceAll('sensors-14','sensors-15'),sensors.cdn.replace('.pdf','-with-cover.pdf'),sensors.cdn.replace('mdpi-res.com','mdpi-res.com.evil.example'),sensors.cdn.replace('mdpi-res.com','user:password@mdpi-res.com'),sensors.cdn.replace('mdpi-res.com','mdpi-res.com:8443'),sensors.cdn.replace('https:','http:'),sensors.page.replace('6828','6829')+'/pdf'])assert.equal(await f.invoke('mdpiFileIdentity',f.job,url),false);checks++;}
+ {for(const options of [sensors,modern]){const f=fixture(options);await f.invoke('checkTab',7,true);assert(f.state.complete);assert.equal(f.calls.filter(c=>c.remote).length,1);assert.equal(f.calls.find(c=>c.remote).remote,options.page+'/pdf');assert.equal(f.calls.filter(c=>c.nativeDownload).length,0);assert.equal(f.calls.filter(c=>c.api==='pdf-bytes').length,1);assert(!JSON.stringify(f.storage).includes('fixture-private'));}checks++;}
+ {const f=fixture(sensors);f.state.finalUrl=sensors.cdn.replaceAll('06828','06829');await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.api==='pdf-bytes'||c.nativeDownload).length,0);assert.match(f.storage.lastFailure.summary,/身份/);checks++;}
+ {const f=fixture(sensors);f.state.tabUrl=sensors.cdn;await f.invoke('adoptCurrent',{id:8,url:sensors.cdn},SID);await f.invoke('checkTab',8,true);assert(f.state.complete);const wrong=fixture(sensors);await assert.rejects(wrong.invoke('adoptCurrent',{id:8,url:sensors.cdn.replaceAll('06828','06829')},SID));assert(!wrong.state.complete);checks++;}
+ {const f=fixture(sensors);f.state.snapshot.doi=modern.doi;await f.invoke('checkTab',7,true);assert(!f.state.complete);assert.equal(f.calls.filter(c=>c.remote||c.nativeDownload).length,0);checks++;}
+ {const f=fixture(sensors);f.state.papers.push({doi:'10.1000/next',title:'下一篇',article_url:'https://www.scitepress.org/next',status:'BROWSER_PENDING'});await f.invoke('checkTab',7,true);assert(f.state.complete);assert.equal(f.calls.filter(c=>c.create).length,1);assert.equal(f.calls.find(c=>c.create).create.url,'https://www.scitepress.org/next');checks++;}
  console.log(JSON.stringify({status:'PASS',checks,scope:'MDPI original article to matched PDF bytes and queue continuation; mocked Chrome/network, no live browser acceptance'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -341,7 +341,7 @@ def handler_for(bridge, token):
             if not self.authorized():
                 self.send_json(401,{'status':'UNAUTHORIZED'}); return
             if self.path=='/health':
-                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.7','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
+                self.send_json(200,{'status':'READY','service':'papers-capture','version':'0.5.8','pid':os.getpid(),**bridge_binding(bridge.manager)}); return
             if self.path=='/ieee-network':
                 self.send_json(200,bridge.network.status()); return
             if self.path=='/ieee-network-template':
